@@ -1,0 +1,11 @@
+node_modules/
+.expo/
+dist/
+artifacts/
+android/
+ios/
+credentials/
+*.jks
+*.keystore
+credentials.json
+.env

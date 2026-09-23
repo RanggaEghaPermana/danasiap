@@ -1,0 +1,19 @@
+{
+  "name": "danasiap",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "scripts": {
+    "dev": "pnpm --filter @danasiap/web dev",
+    "build": "pnpm --filter @danasiap/web build",
+    "test": "pnpm --filter @danasiap/core test",
+    "typecheck": "pnpm -r typecheck",
+    "android": "pnpm --filter @danasiap/mobile android"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2",
+    "vitest": "^3.2.4",
+    "@types/node": "^22.18.6",
+    "agent-browser": "^0.38.1"
+  }
+}

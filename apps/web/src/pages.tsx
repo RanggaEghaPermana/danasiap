@@ -46,6 +46,7 @@ import {
   PotPanel,
   ShoppingSection,
   ElectricitySection,
+  GasSection,
 } from "./budget";
 import {
   DateLabel,
@@ -73,7 +74,7 @@ export type Page =
   | "insights"
   | "history"
   | "settings";
-export type PlansTab = "needs" | "shopping" | "shop-run" | "token";
+export type PlansTab = "needs" | "shopping" | "shop-run" | "token" | "gas";
 export type Dialog =
   | { type: "transaction"; kind?: "income" | "expense"; fromLeftover?: boolean }
   | { type: "day"; date: string }
@@ -521,13 +522,14 @@ export function Plans({
             ["needs", "Kebutuhan"],
             ["shopping", "Belanja bulanan"],
             ["token", "Token listrik"],
+            ["gas", "Gas"],
           ] as const
         ).map(([id, label]) => (
           <button
             key={id}
             role="tab"
             aria-selected={tab === id}
-            className={tab === id ? "selected" : ""}
+            className={`${tab === id ? "selected" : ""}${id === "gas" ? " tab-short" : ""}`}
             onClick={() => setPlansTab(id)}
           >
             {label}
@@ -544,6 +546,8 @@ export function Plans({
         />
       ) : tab === "token" ? (
         <ElectricitySection state={state} dispatch={dispatch} />
+      ) : tab === "gas" ? (
+        <GasSection state={state} dispatch={dispatch} />
       ) : (
         <>
       <div className="overview-strip">

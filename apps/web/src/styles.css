@@ -3985,7 +3985,10 @@ label.pot-toggle {
   gap: 4px;
 }
 .plans-tabs {
-  max-width: 560px;
+  max-width: 620px;
+}
+.plans-tabs button.tab-short {
+  flex: 0.55;
 }
 .shopping-panel {
   margin-bottom: 25px;

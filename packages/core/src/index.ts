@@ -154,6 +154,23 @@ export interface Attendance {
   auto?: boolean;
 }
 
+export interface GasPurchase {
+  id: string;
+  date: DateKey;
+  /** Total paid for this purchase. */
+  amount: number;
+  /** Cylinder size in kg (3, 5.5, 12, …). */
+  size?: number;
+  /** Cylinders bought at once (default 1). */
+  count?: number;
+}
+
+export interface Gas {
+  purchases: GasPurchase[];
+  /** Planned gas spending per 30 days. */
+  monthlyBudget?: number;
+}
+
 export interface AppState {
   profile: Profile;
   transactions: Transaction[];
@@ -163,6 +180,7 @@ export interface AppState {
   leftovers?: Leftover[];
   shopping?: ShoppingList;
   electricity?: Electricity;
+  gas?: Gas;
 }
 
 export interface ForecastOptions {
@@ -743,6 +761,8 @@ export type FinancialAction =
   | { type: 'electricity/purchase'; purchase: TokenPurchase }
   | { type: 'electricity/reading'; reading: MeterReading }
   | { type: 'electricity/settings'; monthlyBudget?: number; power?: number }
+  | { type: 'gas/purchase'; purchase: GasPurchase }
+  | { type: 'gas/settings'; monthlyBudget?: number }
   | { type: 'state/reset'; state: AppState };
 
 export function reducer(state: AppState, action: FinancialAction, today = localDate()): AppState {
@@ -919,6 +939,25 @@ export function reducer(state: AppState, action: FinancialAction, today = localD
       next = syncElectricityNeed({ ...state, electricity: { ...electricity, monthlyBudget: action.monthlyBudget, power: action.power } }, today);
       break;
     }
+    case 'gas/purchase': {
+      const purchase = action.purchase;
+      assertDate(purchase.date);
+      if (purchase.date > today) throw new Error('Tanggal beli gas tidak boleh di masa depan.');
+      const gas = state.gas ?? { purchases: [] };
+      if (gas.purchases.some((entry) => entry.id === purchase.id)) return state;
+      const active = activeNeed(state, GAS_NEED);
+      next = syncGasNeed({
+        ...state,
+        gas: { ...gas, purchases: [...gas.purchases, purchase] },
+        needs: state.needs.map((need) => need.id === active?.id ? { ...need, paid: true, paidAmount: need.amount, saved: 0 } : need),
+        transactions: [...state.transactions, { id: `gas:${purchase.id}`, title: 'Gas elpiji', amount: purchase.amount, type: 'expense', category: 'Gas', date: purchase.date, needId: active?.id ?? GAS_NEED }],
+      }, today);
+      break;
+    }
+    case 'gas/settings': {
+      next = syncGasNeed({ ...state, gas: { ...(state.gas ?? { purchases: [] }), monthlyBudget: action.monthlyBudget } }, today);
+      break;
+    }
     case 'state/reset':
       next = action.state;
       break;
@@ -1024,6 +1063,17 @@ export function validateState(value: unknown): AppState {
       if (!record(item) || !text(item.id) || !text(item.name) || !count(item.qty) || !money(item.price) || (item.skip !== undefined && typeof item.skip !== 'boolean') || ids.has(item.id)) fail('barang belanja');
       if (item.image !== undefined && (typeof item.image !== 'string' || item.image.length > MAX_ITEM_IMAGE || !/^(data:image\/(jpeg|png|webp);base64,|https:\/\/)/.test(item.image))) fail('foto barang belanja');
       ids.add(item.id);
+    }
+  }
+  if (state.gas !== undefined) {
+    const gas = state.gas;
+    if (!record(gas) || (gas.monthlyBudget !== undefined && !money(gas.monthlyBudget))) fail('gas');
+    const ids = new Set<string>();
+    for (const purchase of list(gas.purchases, 'gas')) {
+      if (!record(purchase) || !text(purchase.id) || !isDateKey(purchase.date) || !money(purchase.amount) || purchase.amount === 0 ||
+          (purchase.size !== undefined && (!count(purchase.size) || purchase.size > 100)) ||
+          (purchase.count !== undefined && (!Number.isInteger(purchase.count) || purchase.count < 1 || purchase.count > 20)) || ids.has(purchase.id)) fail('pembelian gas');
+      ids.add(purchase.id);
     }
   }
   if (state.electricity !== undefined) {
@@ -1465,8 +1515,10 @@ export function shoppingDueDate(state: AppState, today = localDate()): DateKey {
   let { start, end } = periodBounds(today, startDay);
   if (state.shopping?.lastDone && state.shopping.lastDone >= start) ({ start, end } = periodBounds(addDays(end, 1), startDay));
   const day = state.shopping?.dueDay ?? 1;
-  for (let date = start; date <= end; date = addDays(date, 1)) if (Number(date.slice(8, 10)) === day) return date;
-  return start;
+  let due = start;
+  for (let date = start; date <= end; date = addDays(date, 1)) if (Number(date.slice(8, 10)) === day) { due = date; break; }
+  // A list made after this period's shopping day is still due: today, not a date in the past.
+  return due < today ? today : due;
 }
 
 /** Keeps one open "Belanja bulanan" need whose amount is the list total. */
@@ -1615,6 +1667,93 @@ function syncElectricityNeed(state: AppState, today: DateKey): AppState {
       id: uniqueId(needs.map((need) => need.id), `${ELECTRICITY_NEED}:${dueDate}`), title: 'Token listrik',
       amount: estimate.typicalAmount, saved: Math.min(saved, estimate.typicalAmount), dueDate, kind: 'recurring',
       intervalDays: Math.min(366, Math.max(1, Math.round(estimate.daysPerPurchase ?? 30))), priority: 'essential',
+    }];
+  }
+  return { ...state, needs };
+}
+
+// ---------------------------------------------------------------------------
+// LPG gas cylinders
+// ---------------------------------------------------------------------------
+
+const GAS_NEED = 'gas';
+
+export function isGasNeed(need: Need): boolean {
+  return need.id === GAS_NEED || need.id.startsWith(`${GAS_NEED}:`);
+}
+
+/** Rough first guess of how long one cylinder lasts, before there is any purchase history. */
+const GAS_FIRST_GUESS_DAYS: Record<number, number> = { 3: 10, 5.5: 21, 12: 45 };
+
+export interface GasEstimate {
+  purchases: number;
+  /** Amount and cylinders of the latest purchase, used for the next one. */
+  typicalAmount: number;
+  typicalCount: number;
+  size?: number;
+  /** How many days one cylinder lasts. */
+  daysPerCylinder?: number;
+  /** True while the estimate is only a guess from the cylinder size. */
+  guessed: boolean;
+  costPerDay?: number;
+  /** Cost per 30 days. */
+  monthlyCost?: number;
+  nextPurchaseDate?: DateKey;
+  daysLeft?: number;
+  target?: { overBudget: number };
+}
+
+export function gasEstimate(state: AppState, today = localDate()): GasEstimate {
+  assertDate(today);
+  const gas = state.gas;
+  const purchases = [...(gas?.purchases ?? [])].sort((a, b) => a.date.localeCompare(b.date));
+  const last = purchases[purchases.length - 1];
+  if (!last) return { purchases: 0, typicalAmount: 0, typicalCount: 1, guessed: false };
+  // Each purchase lasted until the next one; the latest six refills describe current habits.
+  const recent = purchases.slice(-7);
+  let days = 0;
+  let cylinders = 0;
+  let spent = 0;
+  for (let i = 1; i < recent.length; i++) {
+    const span = daysBetween(recent[i - 1].date, recent[i].date);
+    if (span <= 0) continue;
+    days += span;
+    cylinders += recent[i - 1].count ?? 1;
+    spent += recent[i - 1].amount;
+  }
+  const typicalCount = last.count ?? 1;
+  const guess = last.size !== undefined ? GAS_FIRST_GUESS_DAYS[last.size] : undefined;
+  const daysPerCylinder = cylinders > 0 ? days / cylinders : guess;
+  const costPerDay = days > 0 ? spent / days : daysPerCylinder ? last.amount / (daysPerCylinder * typicalCount) : undefined;
+  const nextPurchaseDate = daysPerCylinder ? addDays(last.date, Math.max(1, Math.round(daysPerCylinder * typicalCount))) : undefined;
+  const monthlyCost = costPerDay !== undefined ? Math.round(costPerDay * 30) : undefined;
+  return {
+    purchases: purchases.length,
+    typicalAmount: last.amount,
+    typicalCount,
+    size: last.size,
+    daysPerCylinder,
+    guessed: cylinders === 0 && daysPerCylinder !== undefined,
+    costPerDay: costPerDay !== undefined ? Math.round(costPerDay) : undefined,
+    monthlyCost,
+    nextPurchaseDate,
+    daysLeft: nextPurchaseDate ? Math.max(0, daysBetween(today, nextPurchaseDate)) : undefined,
+    target: gas?.monthlyBudget ? { overBudget: monthlyCost !== undefined ? Math.max(0, monthlyCost - gas.monthlyBudget) : 0 } : undefined,
+  };
+}
+
+/** Replaces the open "Gas elpiji" need with the latest estimate of the next refill. */
+function syncGasNeed(state: AppState, today: DateKey): AppState {
+  const estimate = gasEstimate(state, today);
+  const open = state.needs.filter((need) => isGasNeed(need) && !need.paid && !need.paidAmount);
+  const saved = open.reduce((sum, need) => sum + need.saved, 0);
+  let needs = state.needs.filter((need) => !open.includes(need));
+  if (estimate.typicalAmount > 0 && estimate.nextPurchaseDate) {
+    const dueDate = estimate.nextPurchaseDate < today ? today : estimate.nextPurchaseDate;
+    needs = [...needs, {
+      id: uniqueId(needs.map((need) => need.id), `${GAS_NEED}:${dueDate}`), title: 'Gas elpiji',
+      amount: estimate.typicalAmount, saved: Math.min(saved, estimate.typicalAmount), dueDate, kind: 'recurring',
+      intervalDays: Math.min(366, Math.max(1, Math.round((estimate.daysPerCylinder ?? 30) * estimate.typicalCount))), priority: 'essential',
     }];
   }
   return { ...state, needs };

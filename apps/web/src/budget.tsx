@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ArrowUpRight,
   Camera,
@@ -9,6 +9,7 @@ import {
   Trash2,
   Undo2,
   Zap,
+  Flame,
   PiggyBank,
   CalendarDays,
   Scale,
@@ -19,6 +20,7 @@ import {
   currency,
   dailyTransactionId,
   electricityEstimate,
+  gasEstimate,
   isScheduled,
   isShoppingNeed,
   localDate,
@@ -42,7 +44,7 @@ import {
   MoneyInput,
   PanelHeading,
 } from "./components";
-import { TokenPurchaseForm } from "./forms";
+import { GasPurchaseForm, TokenPurchaseForm, gasSizeText } from "./forms";
 import { Collapse, MorphSwap, exitThen, flyTo, useAppear } from "./motion";
 
 /** Where money set aside ends up: the Uang Sisa card (or, off the dashboard, its note). */
@@ -1017,6 +1019,38 @@ export function ShoppingSection({
     JSON.stringify(parsed.map(({ id, name, qty, price, skip, image }) => [id, name.trim(), qty, price, Boolean(skip), image ?? ""])) !==
       JSON.stringify((saved?.items ?? []).map(({ id, name, qty, price, skip, image }) => [id, name, qty, price, Boolean(skip), image ?? ""])) ||
     dueDay !== (saved?.dueDay ?? dueDay);
+  // Leaving the tab with unsaved but complete rows saves them, so a typed list is never lost.
+  const pending = useRef<{ dirty: boolean; items: ShoppingItem[] | null; dueDay: number }>({ dirty: false, items: null, dueDay });
+  // Completely empty rows (no name, no price) are ignored rather than blocking the save.
+  const filled = parsed.filter((item) => item.name.trim() || item.price > 0);
+  const complete = filled.every((item) => item.name.trim() && Number.isFinite(item.qty) && item.qty > 0 && item.qty <= 100_000);
+  pending.current = {
+    dirty,
+    dueDay,
+    items: complete
+      ? filled.map((item) => ({
+          id: item.id,
+          name: item.name.trim(),
+          qty: item.qty,
+          price: item.price,
+          ...(item.skip ? { skip: true } : {}),
+          ...(item.image ? { image: item.image } : {}),
+        }))
+      : null,
+  };
+  useEffect(
+    () => () => {
+      const { dirty: unsaved, items, dueDay: day } = pending.current;
+      if (unsaved && items) {
+        try {
+          dispatch({ type: "shopping/set", items, dueDay: day });
+        } catch {
+          /* Incomplete data stays unsaved; the editor shows why when opened again. */
+        }
+      }
+    },
+    [],
+  );
   const appear = useAppear(items.map((i) => i.id));
   const running = Boolean(run && saved);
   return (
@@ -1628,6 +1662,203 @@ function ElectricitySettingsForm({
         <small>
           Cuma perlu diisi kalau struk token nggak mencantumkan kWh.
         </small>
+      </label>
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      {message && <p className="form-success">{message}</p>}
+      <button className="button dark full" type="submit">
+        Simpan pengaturan <Check size={17} />
+      </button>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Gas elpiji
+// ---------------------------------------------------------------------------
+
+const monthsFormat = new Intl.NumberFormat("id-ID", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 1,
+});
+
+/** "45 hari (1,5 bulan)" — months only once a cylinder lasts a month or more. */
+export function gasDaysText(days: number) {
+  const rounded = Math.round(days);
+  return rounded >= 30
+    ? `${rounded} hari (${monthsFormat.format(Math.round((rounded / 30) * 10) / 10)} bulan)`
+    : `${rounded} hari`;
+}
+
+export function GasSection({
+  state,
+  dispatch,
+}: {
+  state: AppState;
+  dispatch: Dispatch;
+}) {
+  const estimate = gasEstimate(state);
+  const gas = state.gas;
+  const purchases = [...(gas?.purchases ?? [])]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 12);
+  const [message, setMessage] = useState("");
+  return (
+    <div className="electricity-grid">
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Gas elpiji</h2>
+            <p>Perkiraan dari riwayat beli tabung gas</p>
+          </div>
+          <span className="pot-icon">
+            <Flame size={20} />
+          </span>
+        </div>
+        {!estimate.purchases ? (
+          <p className="form-hint">
+            Catat tiap beli gas, DanaSiap hitung 1 tabung tahan berapa lama dan
+            kapan harus beli lagi.
+          </p>
+        ) : (
+          <>
+            {estimate.daysPerCylinder !== undefined && (
+              <p className="electricity-headline">
+                1 tabung
+                {estimate.size !== undefined
+                  ? ` ${gasSizeText(estimate.size)}`
+                  : ""}{" "}
+                tahan ± {gasDaysText(estimate.daysPerCylinder)}
+              </p>
+            )}
+            {estimate.guessed && (
+              <p className="form-hint">
+                (perkiraan awal dari ukuran tabung — makin akurat setelah beli
+                lagi)
+              </p>
+            )}
+            {estimate.costPerDay !== undefined && (
+              <div className="daily-row">
+                <span>Biaya gas</span>
+                <strong>
+                  ± <Money amount={estimate.costPerDay} />
+                  /hari
+                </strong>
+              </div>
+            )}
+            {estimate.monthlyCost !== undefined && (
+              <div className="daily-row">
+                <span>Perkiraan sebulan</span>
+                <strong>
+                  ± <Money amount={estimate.monthlyCost} />
+                </strong>
+              </div>
+            )}
+            {estimate.nextPurchaseDate && (
+              <div className="daily-row">
+                <span>Perkiraan habis</span>
+                <strong>
+                  <DateLabel date={estimate.nextPurchaseDate} />
+                  {estimate.daysLeft !== undefined &&
+                    (estimate.daysLeft === 0
+                      ? " · hari ini"
+                      : ` · ${estimate.daysLeft} hari lagi`)}
+                </strong>
+              </div>
+            )}
+            {estimate.target &&
+              (estimate.target.overBudget > 0 ? (
+                <div className="check-result bahaya">
+                  <p>
+                    Lebih <Money amount={estimate.target.overBudget} /> dari
+                    jatah gas per bulan.
+                  </p>
+                </div>
+              ) : (
+                <div className="check-result jatah">
+                  <p>
+                    Masih dalam jatah (
+                    <Money amount={gas?.monthlyBudget ?? 0} />
+                    /bulan).
+                  </p>
+                </div>
+              ))}
+          </>
+        )}
+        <h3 className="dialog-subheading">Riwayat beli gas</h3>
+        {purchases.length ? (
+          <div className="pot-list">
+            {purchases.map((purchase) => (
+              <div className="daily-row" key={purchase.id}>
+                <span>
+                  <DateLabel date={purchase.date} />
+                  {` · ${purchase.count ?? 1} × ${
+                    purchase.size !== undefined ? gasSizeText(purchase.size) : "tabung"
+                  }`}
+                </span>
+                <Money amount={purchase.amount} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="form-hint">Belum ada pembelian gas.</p>
+        )}
+      </section>
+      <div className="electricity-forms">
+        <section className="panel">
+          <PanelHeading title="Beli gas" />
+          {message && <p className="form-success">{message}</p>}
+          <GasPurchaseForm
+            key={`${estimate.typicalAmount}-${estimate.size}`}
+            defaultAmount={estimate.typicalAmount}
+            defaultSize={estimate.size}
+            dispatch={dispatch}
+            done={(amount) => setMessage(`Beli gas ${currency(amount)} tercatat.`)}
+          />
+        </section>
+        <section className="panel">
+          <PanelHeading title="Pengaturan gas" />
+          <GasSettingsForm
+            key={`${gas?.monthlyBudget}`}
+            state={state}
+            dispatch={dispatch}
+          />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function GasSettingsForm({
+  state,
+  dispatch,
+}: {
+  state: AppState;
+  dispatch: Dispatch;
+}) {
+  const [budget, setBudget] = useState(state.gas?.monthlyBudget ?? 0);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      dispatch({ type: "gas/settings", monthlyBudget: budget || undefined });
+      setError("");
+      setMessage("Pengaturan gas tersimpan.");
+    } catch (err) {
+      setMessage("");
+      setError(errorText(err));
+    }
+  };
+  return (
+    <form onSubmit={submit}>
+      <label className="field">
+        Jatah gas per bulan (Rp)
+        <MoneyInput value={budget} onChange={setBudget} placeholder="0" />
+        <small>Kosongkan kalau belum mau pakai target.</small>
       </label>
       {error && (
         <p className="form-error" role="alert">

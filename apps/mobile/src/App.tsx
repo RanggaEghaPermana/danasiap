@@ -6,7 +6,7 @@ import { Feather } from '@expo/vector-icons';
 import { useFonts, BarlowCondensed_500Medium, BarlowCondensed_600SemiBold } from '@expo-google-fonts/barlow-condensed';
 import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans';
 import Svg, { Circle, ClipPath, Defs, G, Path, Pattern, Rect } from 'react-native-svg';
-import { AppState, Attendance, DailyItem, FinancialAction, MAX_ITEM_IMAGE, Need, TOKEN_TARIFF, addDays, applyAutomations, balance, calculatePayroll, checkPurchase, currency, dailyTransactionId, defaultState, demoState, electricityEstimate, forecast, formatThousands, getHoliday, isElectricityNeed, isNationalHoliday, isScheduled, isShoppingNeed, isWorkday, localDate, migrateDailyBudget, parseThousands, periodBudget, periodHistory, reducer, remainingAmount, shoppingDueDate, shoppingTotal, spendingImpact, validateState } from '@danasiap/core';
+import { AppState, Attendance, DailyItem, FinancialAction, MAX_ITEM_IMAGE, Need, TOKEN_TARIFF, addDays, applyAutomations, balance, calculatePayroll, checkPurchase, currency, dailyTransactionId, defaultState, demoState, electricityEstimate, forecast, gasEstimate, formatThousands, getHoliday, isElectricityNeed, isGasNeed, isNationalHoliday, isScheduled, isShoppingNeed, isWorkday, localDate, migrateDailyBudget, parseThousands, periodBudget, periodHistory, reducer, remainingAmount, shoppingDueDate, shoppingTotal, spendingImpact, validateState } from '@danasiap/core';
 import { loadPlan, savePlan } from './storage';
 import { DialogHost, showDialog } from './dialog';
 import { enableReminders, scheduleReminders } from './notifications';
@@ -20,7 +20,7 @@ import { Appear, BlurLayer, Collapse, BlurTarget, CrossBlur, FadeBg, FlyLayer, P
 
 type IconName = React.ComponentProps<typeof Feather>['name'];
 type Tab = 'home' | 'needs' | 'calendar' | 'insights';
-type Sheet = 'expense' | 'income' | 'need' | 'attendance' | 'settings' | 'setup' | 'cloud' | 'backup' | 'daily' | 'leftover' | 'check' | 'shopping' | 'token' | 'skip' | null;
+type Sheet = 'expense' | 'income' | 'need' | 'attendance' | 'settings' | 'setup' | 'cloud' | 'backup' | 'daily' | 'leftover' | 'check' | 'shopping' | 'token' | 'gas' | 'skip' | null;
 type DailyDraft = {id: string; title: string; amount: string; days: number[]; skipHolidays: boolean};
 type ShopDraft = {id: string; name: string; qty: string; price: string; skip: boolean; bought: boolean; image?: string};
 const weekdays = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
@@ -29,6 +29,10 @@ const shortDate = (date: string) => new Date(`${date}T12:00:00+07:00`).toLocaleD
 const number = (input: string) => parseThousands(input);
 /** Accepts both comma and dot decimals, e.g. quantities or kWh. */
 const decimal = (input: string) => {const value = Number(input.trim().replace(/\s/g, '').replace(',', '.')); return input.trim() && Number.isFinite(value) ? value : NaN;};
+const GAS_SIZES = [3, 5.5, 12] as const;
+const gasSizeText = (size: number) => `${size.toLocaleString('id-ID')} kg`;
+/** "45 hari (1,5 bulan)" — months only once a cylinder lasts a month or more. */
+const gasDaysText = (days: number) => {const d = Math.round(days); return d >= 30 ? `${d} hari (${(Math.round(d / 30 * 10) / 10).toLocaleString('id-ID', {maximumFractionDigits: 1})} bulan)` : `${d} hari`;};
 const kwhText = (value: number) => (Math.round(value * 10) / 10).toLocaleString('id-ID', {maximumFractionDigits: 1});
 function Icon({name, size = 19, color = c.ink}: {name: IconName; size?: number; color?: string}) { return <Feather name={name} size={size} color={color} />; }
 function Grid({dark = false}: {dark?: boolean}) {
@@ -349,6 +353,10 @@ function DanaSiap() {
   const [meterKwh, setMeterKwh] = useState('');
   const [elecBudget, setElecBudget] = useState('');
   const [elecPower, setElecPower] = useState<number | undefined>(undefined);
+  const [gasAmount, setGasAmount] = useState('');
+  const [gasSize, setGasSize] = useState<number>(3);
+  const [gasCount, setGasCount] = useState('1');
+  const [gasBudget, setGasBudget] = useState('');
   const [skipItem, setSkipItem] = useState('');
   const [skipFrom, setSkipFrom] = useState('');
   const [skipTo, setSkipTo] = useState('');
@@ -380,6 +388,7 @@ function DanaSiap() {
   const budget = useMemo(() => periodBudget(state, today), [state, today]);
   const history = useMemo(() => periodHistory(state, today), [state, today]);
   const electricity = useMemo(() => electricityEstimate(state, today), [state, today]);
+  const gas = useMemo(() => gasEstimate(state, today), [state, today]);
   const activeNeeds = [...state.needs].filter(n => !n.paid).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const todayAttendance = state.attendance.find(a => a.date === today);
   const todayIsWorkday = isWorkday(state, today);
@@ -453,6 +462,7 @@ function DanaSiap() {
     if (next === 'check') setCheckAmount('');
     if (next === 'shopping') {setShopMode('edit'); setShopDraft((state.shopping?.items ?? []).map(item => ({id: item.id, name: item.name, qty: String(item.qty).replace('.', ','), price: formatThousands(item.price), skip: Boolean(item.skip), bought: false, image: item.image}))); setShopDueDay(String(state.shopping?.dueDay ?? state.profile.periodStartDay ?? 1));}
     if (next === 'token') {setTokenAmount(electricity.typicalAmount ? formatThousands(electricity.typicalAmount) : ''); setTokenKwh(''); setMeterKwh(''); setElecBudget(state.electricity?.monthlyBudget ? formatThousands(state.electricity.monthlyBudget) : ''); setElecPower(state.electricity?.power);}
+    if (next === 'gas') {setGasAmount(gas.typicalAmount ? formatThousands(gas.typicalAmount) : ''); setGasSize(gas.size !== undefined && (GAS_SIZES as readonly number[]).includes(gas.size) ? gas.size : 3); setGasCount('1'); setGasBudget(state.gas?.monthlyBudget ? formatThousands(state.gas.monthlyBudget) : '');}
     if (next === 'attendance') {
       const existing = state.attendance.find(a => a.date === selectedDay);
       // An automatic "present" is usually opened to report an absence.
@@ -638,10 +648,10 @@ function DanaSiap() {
     showDialog(`Bayar ${need.title}?`, `${currency(amount)} akan dicatat sebagai pengeluaran hari ini.${need.kind === 'recurring' ? ' Jadwal berikutnya dihitung dari tanggal pembayaran.' : ''}`, [{text: 'Batal', style: 'cancel'}, {text: 'Ya, sudah dibayar', onPress: () => {if (dispatch({type: 'need/pay', id: need.id, date: today})) {setEditingNeed(null); notify(`${need.title} dibayar · ${currency(amount)} dicatat sebagai pengeluaran.`);} else notify('Pembayaran belum tercatat. Periksa lagi rencananya.', 'error');}}]);
   }
   function payNeed(need: Need) {
-    // Shopping and electricity needs are paid through their own flows so the real amount is recorded.
-    if (isShoppingNeed(need) || isElectricityNeed(need)) {
+    // Shopping, electricity and gas needs are paid through their own flows so the real amount is recorded.
+    if (isShoppingNeed(need) || isElectricityNeed(need) || isGasNeed(need)) {
       setEditingNeed(null);
-      setTimeout(() => {if (isShoppingNeed(need)) openShopping('buy'); else open('token');}, 250);
+      setTimeout(() => {if (isShoppingNeed(need)) openShopping('buy'); else open(isGasNeed(need) ? 'gas' : 'token');}, 250);
     } else confirmPay(need);
   }
   function dailyLeftoverOf(itemId: string, date: string) { return (state.leftovers ?? []).find(l => l.id === `sisa:${itemId}:${date}`)?.amount ?? 0; }
@@ -680,6 +690,23 @@ function DanaSiap() {
       items.push({id: draft.id, name: draft.name.trim(), qty, price: number(draft.price || '0'), ...(draft.skip ? {skip: true} : {}), ...(draft.image ? {image: draft.image} : {})});
     }
     return items;
+  }
+  /** The shopping draft differs from the saved list (ignoring completely empty rows). */
+  function shoppingDirty() {
+    const draft = shopDraft.filter(d => d.name.trim() || d.price).map(d => [d.id, d.name.trim(), decimal(d.qty || '1'), number(d.price || '0'), d.skip, d.image ?? '']);
+    const saved = (state.shopping?.items ?? []).map(i => [i.id, i.name, i.qty, i.price, Boolean(i.skip), i.image ?? '']);
+    return JSON.stringify(draft) !== JSON.stringify(saved) || number(shopDueDay || '1') !== (state.shopping?.dueDay ?? number(shopDueDay || '1'));
+  }
+  /** X, backdrop and Back all close through here, so a half-typed shopping list is never lost silently. */
+  function closeSheet(force = false) {
+    // Back/backdrop first put the keyboard away; the X button always closes.
+    if (keyboardHeight > 0) {Keyboard.dismiss(); if (!force) return;}
+    if (sheet === 'shopping' && shopMode === 'edit' && shoppingDirty()) {
+      if (shopDraft.every(d => d.name.trim() || !d.price)) {saveShopping(); return;}
+      showDialog('Ada barang tanpa nama', 'Tulis nama setiap barang supaya daftarnya bisa disimpan.', [{text: 'Lengkapi', style: 'cancel'}, {text: 'Tutup tanpa simpan', style: 'destructive', onPress: () => setSheet(null)}]);
+      return;
+    }
+    setSheet(null);
   }
   function saveShopping(thenBuy = false) {
     const items = shoppingItemsFromDraft();
@@ -725,6 +752,17 @@ function DanaSiap() {
   function saveElectricitySettings() {
     const monthlyBudget = elecBudget ? number(elecBudget) : undefined;
     act({type: 'electricity/settings', monthlyBudget: monthlyBudget || undefined, power: elecPower}, 'Pengaturan listrik tersimpan.');
+  }
+  function buyGas() {
+    const amount = number(gasAmount || '0');
+    if (!Number.isSafeInteger(amount) || amount <= 0) {notify('Isi harga gas yang dibayar.', 'error'); return;}
+    const count = Number(gasCount.trim());
+    if (!Number.isInteger(count) || count < 1 || count > 20) {notify('Jumlah tabung harus 1 sampai 20.', 'error'); return;}
+    if (act({type: 'gas/purchase', purchase: {id: uid(), date: today, amount, size: gasSize, count}}, `Beli gas ${currency(amount)} tercatat.`)) setGasCount('1');
+  }
+  function saveGasSettings() {
+    const monthlyBudget = gasBudget ? number(gasBudget) : undefined;
+    act({type: 'gas/settings', monthlyBudget: monthlyBudget || undefined}, 'Pengaturan gas tersimpan.');
   }
   function openSkip(itemId?: string) {
     setSkipItem(itemId ?? state.dailyItems?.[0]?.id ?? ''); setSkipFrom(selectedDay < today ? today : selectedDay); setSkipTo(addDays(selectedDay < today ? today : selectedDay, 6)); open('skip');
@@ -1123,6 +1161,11 @@ function DanaSiap() {
           <RollingValue value={currency(shoppingTotal(state.shopping))} bg={c.white} containerStyle={{alignSelf: 'flex-start', marginTop: 3}} style={[s.number, {fontSize: 24}]} />
           {state.shopping.lastDone && <Text style={s.mini}>Terakhir belanja {shortDate(state.shopping.lastDone)}</Text>}
         </View>
+        <View style={{gap: 9}}>{state.shopping.items.map(item => <View key={item.id} style={[s.row, {gap: 10}, item.skip && {opacity: .55}]}>
+          {item.image ? <Image source={{uri: item.image}} style={{width: 38, height: 38, borderRadius: 11}} /> : <View style={{width: 38, height: 38, borderRadius: 11, backgroundColor: c.pale, alignItems: 'center', justifyContent: 'center'}}><Icon name="shopping-bag" size={15} color={c.muted} /></View>}
+          <View style={{flex: 1, gap: 2}}><Text style={s.body} numberOfLines={1}>{item.name}</Text><Text style={s.mini}>{item.skip ? 'Masih ada · skip bulan ini' : `${String(item.qty).replace('.', ',')} × ${currency(item.price)}`}</Text></View>
+          <Text style={[s.body, {fontFamily: 'BarlowMedium', fontSize: 15}]}>{item.skip ? '–' : currency(Math.round(item.qty * item.price))}</Text>
+        </View>)}</View>
         <Button title="Mulai belanja" icon="shopping-cart" onPress={() => openShopping('buy')} />
       </> : <>
         <Text style={s.muted}>Tulis daftar belanja rutin (beras, minyak, sabun…). Totalnya jadi kebutuhan wajib tiap periode.</Text>
@@ -1138,6 +1181,16 @@ function DanaSiap() {
         {electricity.target && electricity.target.overBudget > 0 && <Text style={[s.mini, {color: c.red}]}>Lebih {currency(electricity.target.overBudget)} dari jatah bulanan</Text>}
       </View> : <Text style={s.muted}>Catat tiap beli token, DanaSiap perkirakan kapan habis dan berapa sebulan.</Text>}
       <Button title="Beli token / cek meteran" icon="zap" secondary={!electricity.purchases} onPress={() => open('token')} />
+    </View>
+    <View style={s.section}>
+      <PanelNotch />
+      <SectionHead title="Gas elpiji" action="Buka" onPress={() => open('gas')} />
+      {gas.purchases ? <View>
+        <Text style={s.mini}>{gas.daysPerCylinder !== undefined ? `1 tabung${gas.size !== undefined ? ` ${gasSizeText(gas.size)}` : ''} tahan ± ${gasDaysText(gas.daysPerCylinder)}${gas.nextPurchaseDate ? ` · perkiraan habis ${shortDate(gas.nextPurchaseDate)}` : ''}` : 'Perkiraan muncul setelah beli gas lagi'}</Text>
+        <Text style={[s.number, {fontSize: 24, marginTop: 3}]}>{currency(gas.typicalAmount)}</Text>
+        {gas.target && gas.target.overBudget > 0 && <Text style={[s.mini, {color: c.red}]}>Lebih {currency(gas.target.overBudget)} dari jatah gas per bulan</Text>}
+      </View> : <Text style={s.muted}>Catat tiap beli gas, DanaSiap hitung 1 tabung tahan berapa lama dan kapan harus beli lagi.</Text>}
+      <Button title="Beli gas" icon="thermometer" secondary={!gas.purchases} onPress={() => open('gas')} />
     </View>
     {activeNeeds.filter(n => needFilter === 'all' || n.kind === needFilter).map(n => (
       <Appear style={s.section} key={n.id}>
@@ -1190,7 +1243,7 @@ function DanaSiap() {
     <FlyLayer />
     <DialogHost />
     <Toast toast={toastHost === 'main' ? toast : null} bottom={started ? navBottom + 60 + 12 : navBottom + 12} onClose={closeToast} />
-    <SheetModal visible={sheet !== null} onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setSheet(null); }} onBackdropPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setSheet(null); }} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'sheet' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={[s.between, {marginBottom: 13}]}><CrossBlur k={sheet ?? ''} mode="left" style={{flex: 1}}><Text style={s.title}>{{expense: 'Catat pengeluaran', income: 'Catat pemasukan', need: 'Bikin rencana baru', attendance: 'Kehadiran kerja', settings: 'Ruang pribadi', setup: 'Kenalan dulu, yuk.', cloud: 'Sinkron perangkat', backup: 'Pulihkan cadangan', daily: 'Ada uang sisa?', leftover: 'Uang Sisa', check: 'Cek sebelum beli', shopping: shopMode === 'buy' ? 'Lagi belanja' : 'Belanja bulanan', token: 'Token listrik', skip: 'Libur panjang'}[sheet ?? 'expense']}</Text></CrossBlur><AnimatedPressable accessibilityLabel="Tutup" onPress={() => setSheet(null)} style={s.circle}><Icon name="x" /></AnimatedPressable></View><ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><CrossBlur k={`${sheet === 'income' ? 'expense' : sheet}:${shopMode}`} parentVeil>
+    <SheetModal visible={sheet !== null} onRequestClose={() => closeSheet()} onBackdropPress={() => closeSheet()} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'sheet' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={[s.between, {marginBottom: 13}]}><CrossBlur k={sheet ?? ''} mode="left" style={{flex: 1}}><Text style={s.title}>{{expense: 'Catat pengeluaran', income: 'Catat pemasukan', need: 'Bikin rencana baru', attendance: 'Kehadiran kerja', settings: 'Ruang pribadi', setup: 'Kenalan dulu, yuk.', cloud: 'Sinkron perangkat', backup: 'Pulihkan cadangan', daily: 'Ada uang sisa?', leftover: 'Uang Sisa', check: 'Cek sebelum beli', shopping: shopMode === 'buy' ? 'Lagi belanja' : 'Belanja bulanan', token: 'Token listrik', gas: 'Gas elpiji', skip: 'Libur panjang'}[sheet ?? 'expense']}</Text></CrossBlur><AnimatedPressable accessibilityLabel="Tutup" onPress={() => closeSheet(true)} style={s.circle}><Icon name="x" /></AnimatedPressable></View><ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><CrossBlur k={`${sheet === 'income' ? 'expense' : sheet}:${shopMode}`} parentVeil>
       {(sheet === 'expense' || sheet === 'income' || sheet === 'need') && <>
         {sheet !== 'need' && <SegmentPills style={{gap: 8}} options={[{key: 'expense', label: 'Uang keluar'}, {key: 'income', label: 'Uang masuk'}] as const} value={sheet === 'income' ? 'income' : 'expense'} onChange={setSheet} />}
         <Collapse visible={sheet === 'income' && working}><Text style={[s.muted, {marginTop: 10}]}>{state.profile.payrollCycle === 'monthly' ? "Pemasukan kerja dicatat dari absensi. Jika mencatat gaji yang sudah cair, sertakan kata ‘gaji’ di namanya agar prediksi tidak menghitung dua kali." : 'Pemasukan kerja dicatat otomatis dari absensi. Gunakan ini untuk pemasukan lain.'}</Text></Collapse>
@@ -1342,6 +1395,36 @@ function DanaSiap() {
         <View style={s.section}>
           <SectionHead title="Riwayat beli token" />
           {state.electricity?.purchases.length ? [...state.electricity.purchases].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12).map(p => <Appear key={p.id} style={s.between}><View style={{gap: 3}}><Text style={s.listTitle}>{shortDate(p.date)}</Text>{p.kwh ? <Text style={s.mini}>{kwhText(p.kwh)} kWh</Text> : null}</View><Text style={s.amount}>{currency(p.amount)}</Text></Appear>) : <Text style={s.muted}>Belum ada pembelian token.</Text>}
+        </View>
+      </View>}
+      {sheet === 'gas' && <View style={{gap: 12}}>
+        <View style={[s.section, {gap: 8}]}>
+          {!gas.purchases ? <Text style={s.muted}>Catat tiap beli gas, DanaSiap hitung 1 tabung tahan berapa lama dan kapan harus beli lagi.</Text> : <>
+            {gas.daysPerCylinder !== undefined && <Text style={s.heading}>1 tabung{gas.size !== undefined ? ` ${gasSizeText(gas.size)}` : ''} tahan ± {gasDaysText(gas.daysPerCylinder)}</Text>}
+            {gas.guessed && <Text style={s.muted}>(perkiraan awal dari ukuran tabung — makin akurat setelah beli lagi)</Text>}
+            {gas.costPerDay !== undefined && line('Biaya gas', `± ${currency(gas.costPerDay)}/hari`)}
+            {gas.monthlyCost !== undefined && line('Perkiraan sebulan', `± ${currency(gas.monthlyCost)}`)}
+            {gas.nextPurchaseDate && line('Perkiraan habis', `${shortDate(gas.nextPurchaseDate)} · ${gas.daysLeft ? `${gas.daysLeft} hari lagi` : 'hari ini'}`)}
+          </>}
+          {gas.target && gas.monthlyCost !== undefined && <Text style={[s.body, {lineHeight: 18}, gas.target.overBudget > 0 && {color: c.red}]}>{gas.target.overBudget > 0 ? `Lebih ${currency(gas.target.overBudget)} dari jatah gas per bulan` : '✓ Masih dalam jatah'}</Text>}
+        </View>
+        <View style={s.section}>
+          <SectionHead title="Beli gas" />
+          <Text style={s.fieldLabel}>UKURAN TABUNG</Text>
+          <SegmentPills style={{gap: 6}} options={GAS_SIZES.map(size => ({key: size as number, label: gasSizeText(size)}))} value={gasSize} onChange={setGasSize} />
+          <Field label="HARGA (RP)" value={gasAmount} onChange={setGasAmount} placeholder="22.000" numeric />
+          <Field label="JUMLAH TABUNG" value={gasCount} onChange={text => setGasCount(text.replace(/\D/g, '').slice(0, 2))} placeholder="1" numeric />
+          <Text style={s.muted}>Dicatat hari ini sebagai pengeluaran Gas elpiji.</Text>
+          <Button title="Catat beli gas" icon="thermometer" onPress={buyGas} />
+        </View>
+        <View style={s.section}>
+          <SectionHead title="Pengaturan" />
+          <Field label="JATAH GAS PER BULAN (RP)" value={gasBudget} onChange={setGasBudget} placeholder="Opsional" numeric />
+          <Button title="Simpan pengaturan gas" secondary icon="sliders" onPress={saveGasSettings} />
+        </View>
+        <View style={s.section}>
+          <SectionHead title="Riwayat beli gas" />
+          {state.gas?.purchases.length ? [...state.gas.purchases].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12).map(p => <Appear key={p.id} style={s.between}><View style={{gap: 3}}><Text style={s.listTitle}>{shortDate(p.date)}</Text><Text style={s.mini}>{p.count ?? 1} × {p.size !== undefined ? gasSizeText(p.size) : 'tabung'}</Text></View><Text style={s.amount}>{currency(p.amount)}</Text></Appear>) : <Text style={s.muted}>Belum ada pembelian gas.</Text>}
         </View>
       </View>}
       {sheet === 'skip' && <>
@@ -1684,6 +1767,6 @@ function DanaSiap() {
         {cloudMessage && <Text style={[s.muted, {marginTop: 15, textAlign: 'center'}]}>{cloudMessage}</Text>}
       </>}
     </CrossBlur></ScrollView></SheetModal>
-    <SheetModal visible={editingNeed !== null} onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} onBackdropPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'need' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={s.between}><Text style={s.title}>{editingNeed?.title}</Text><AnimatedPressable accessibilityLabel="Tutup detail kebutuhan" onPress={() => setEditingNeed(null)} style={s.circle}><Icon name="x" /></AnimatedPressable></View>{editingNeed && <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><Text style={[s.number, {marginTop: 12}]}>{currency(remainingAmount(editingNeed))}</Text><Text style={s.muted}>Jadwal {shortDate(editingNeed.dueDate)} · alokasi {currency(editingNeed.saved)}</Text><Field label="ALOKASI DARI SALDO (RP)" value={allocatedInput} onChange={setAllocatedInput} numeric /><Field label="JADWAL BARU (YYYY-MM-DD)" value={rescheduleDate} onChange={setRescheduleDate} /><View style={[s.row, {gap: 9, marginTop: 11}]}><Chip label="−1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, -1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+3 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 3));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /></View>{formError && <Text style={s.error}>{formError}</Text>}<View style={{gap: 11, marginTop: 22}}><Button title="Simpan & hitung ulang" secondary icon="calendar" onPress={() => {try {const next = reducer(reducer(current.current, {type: 'need/reschedule', id: editingNeed.id, dueDate: rescheduleDate}), {type: 'need/update', id: editingNeed.id, changes: {saved: number(allocatedInput)}}); persist(next); setEditingNeed(null); notify(`Rencana ${editingNeed.title} diperbarui · ${shortDate(rescheduleDate)}, alokasi ${currency(number(allocatedInput))}.`);} catch (error) {setFormError(error instanceof Error ? error.message : 'Periksa alokasi dan tanggal.');}}} /><Button title={isShoppingNeed(editingNeed) ? 'Mulai belanja' : isElectricityNeed(editingNeed) ? 'Catat beli token' : editingNeed.kind === 'recurring' ? 'Sudah dipakai / dibayar hari ini' : 'Sudah dibayar hari ini'} icon="check-circle" onPress={() => payNeed(editingNeed)} /></View><Text style={[s.muted, {marginTop: 12}]}>Jika rutin, jadwal berikutnya dimulai dari pembayaran aktual. Saldo dan prediksi langsung diperbarui.</Text></ScrollView>}</SheetModal>
+    <SheetModal visible={editingNeed !== null} onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} onBackdropPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'need' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={s.between}><Text style={s.title}>{editingNeed?.title}</Text><AnimatedPressable accessibilityLabel="Tutup detail kebutuhan" onPress={() => setEditingNeed(null)} style={s.circle}><Icon name="x" /></AnimatedPressable></View>{editingNeed && <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><Text style={[s.number, {marginTop: 12}]}>{currency(remainingAmount(editingNeed))}</Text><Text style={s.muted}>Jadwal {shortDate(editingNeed.dueDate)} · alokasi {currency(editingNeed.saved)}</Text><Field label="ALOKASI DARI SALDO (RP)" value={allocatedInput} onChange={setAllocatedInput} numeric /><Field label="JADWAL BARU (YYYY-MM-DD)" value={rescheduleDate} onChange={setRescheduleDate} /><View style={[s.row, {gap: 9, marginTop: 11}]}><Chip label="−1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, -1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+3 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 3));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /></View>{formError && <Text style={s.error}>{formError}</Text>}<View style={{gap: 11, marginTop: 22}}><Button title="Simpan & hitung ulang" secondary icon="calendar" onPress={() => {try {const next = reducer(reducer(current.current, {type: 'need/reschedule', id: editingNeed.id, dueDate: rescheduleDate}), {type: 'need/update', id: editingNeed.id, changes: {saved: number(allocatedInput)}}); persist(next); setEditingNeed(null); notify(`Rencana ${editingNeed.title} diperbarui · ${shortDate(rescheduleDate)}, alokasi ${currency(number(allocatedInput))}.`);} catch (error) {setFormError(error instanceof Error ? error.message : 'Periksa alokasi dan tanggal.');}}} /><Button title={isShoppingNeed(editingNeed) ? 'Mulai belanja' : isElectricityNeed(editingNeed) ? 'Catat beli token' : isGasNeed(editingNeed) ? 'Catat beli gas' : editingNeed.kind === 'recurring' ? 'Sudah dipakai / dibayar hari ini' : 'Sudah dibayar hari ini'} icon="check-circle" onPress={() => payNeed(editingNeed)} /></View><Text style={[s.muted, {marginTop: 12}]}>Jika rutin, jadwal berikutnya dimulai dari pembayaran aktual. Saldo dan prediksi langsung diperbarui.</Text></ScrollView>}</SheetModal>
   </View>;
 }

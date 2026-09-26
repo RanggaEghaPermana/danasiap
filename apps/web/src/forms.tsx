@@ -26,6 +26,8 @@ import {
   checkPurchase,
   isShoppingNeed,
   isElectricityNeed,
+  isGasNeed,
+  gasEstimate,
   isWorkday,
   isDateKey,
   reducer,
@@ -860,6 +862,105 @@ export function TokenPurchaseForm({
   );
 }
 
+export const GAS_SIZES = [3, 5.5, 12] as const;
+export const gasSizeText = (size: number) =>
+  `${size.toLocaleString("id-ID")} kg`;
+
+export function GasPurchaseForm({
+  defaultAmount = 0,
+  defaultSize,
+  dispatch,
+  done,
+}: {
+  defaultAmount?: number;
+  defaultSize?: number;
+  dispatch: (a: FinancialAction) => void;
+  done: (amount: number) => void;
+}) {
+  const initialSize =
+    defaultSize !== undefined && (GAS_SIZES as readonly number[]).includes(defaultSize)
+      ? defaultSize
+      : 3;
+  const [amount, setAmount] = useState(defaultAmount);
+  const [size, setSize] = useState<number>(initialSize);
+  const [count, setCount] = useState("1");
+  const [date, setDate] = useState(localDate());
+  const [error, setError] = useState("");
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      if (!amount || amount <= 0) throw new Error("Isi harga gas yang dibayar.");
+      const countValue = Number(count.trim());
+      if (!Number.isInteger(countValue) || countValue < 1 || countValue > 20)
+        throw new Error("Jumlah tabung harus 1 sampai 20.");
+      dispatch({
+        type: "gas/purchase",
+        purchase: { id: id(), date, amount, size, count: countValue },
+      });
+      setAmount(defaultAmount);
+      setCount("1");
+      setError("");
+      done(amount);
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
+  return (
+    <form onSubmit={submit}>
+      <div className="segmented m-has-indicator">
+        <TabIndicator active={size} />
+        {GAS_SIZES.map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={size === value ? "selected" : ""}
+            onClick={() => setSize(value)}
+          >
+            {gasSizeText(value)}
+          </button>
+        ))}
+      </div>
+      <div className="form-two">
+        <label className="field">
+          Harga (Rp)
+          <MoneyInput value={amount} onChange={setAmount} placeholder="22.000" />
+        </label>
+        <label className="field">
+          Jumlah tabung
+          <input
+            inputMode="numeric"
+            value={count}
+            onChange={(e) => setCount(e.target.value.replace(/\D/g, ""))}
+            placeholder="1"
+          />
+        </label>
+      </div>
+      <label className="field">
+        Tanggal beli
+        <input
+          type="date"
+          required
+          max={localDate()}
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+        />
+      </label>
+      <p className="form-hint">
+        Dicatat sebagai pengeluaran gas elpiji dan dipakai untuk memperkirakan
+        kapan harus beli lagi.
+      </p>
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <button className="button dark full" type="submit">
+        Catat beli gas <Check size={17} />
+      </button>
+    </form>
+  );
+}
+
 export function NeedForm({
   dispatch,
   done,
@@ -1177,6 +1278,13 @@ export function NeedDetail({
       ) : isElectricityNeed(need) ? (
         <TokenPurchaseForm
           defaultAmount={remainingAmount(need)}
+          dispatch={dispatch}
+          done={done}
+        />
+      ) : isGasNeed(need) ? (
+        <GasPurchaseForm
+          defaultAmount={remainingAmount(need)}
+          defaultSize={gasEstimate(state).size}
           dispatch={dispatch}
           done={done}
         />

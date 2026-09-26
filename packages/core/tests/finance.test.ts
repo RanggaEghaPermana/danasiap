@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addDays, applyAutoAttendance, applyAutoDaily, applyAutomations, balance, calculatePayroll, checkPurchase, electricityEstimate,
-  daysBetween, isDateKey, migrateDailyBudget, periodBounds, periodBudget, periodHistory, shoppingTotal, defaultState, demoState, forecast, getHoliday, getMonthBounds,
+  daysBetween, gasEstimate, isDateKey, migrateDailyBudget, periodBounds, periodBudget, periodHistory, shoppingTotal, defaultState, demoState, forecast, getHoliday, getMonthBounds,
   getPreviousMonthBounds, isNationalHoliday, isWorkday, localDate, reducer, remainingAmount, validateState, type AppState, type Need,
 } from '../src/index';
 
@@ -718,6 +718,12 @@ describe('monthly shopping list', () => {
     expect(updated.needs[0].amount).toBe(246_000);
   });
 
+  it('is due today when the list is made after this period\'s shopping day', () => {
+    vi.setSystemTime(new Date('2026-09-26T05:00:00Z'));
+    const state = reducer(setup({ periodStartDay: 1, openingBalance: 1_000_000 }), { type: 'shopping/set', items: list, dueDay: 1 });
+    expect(state.needs).toMatchObject([{ title: 'Belanja bulanan', dueDate: '2026-09-26' }]);
+  });
+
   it('records the real total, keeps new prices and moves the difference into the pot', () => {
     vi.setSystemTime(new Date('2026-09-28T05:00:00Z'));
     let state = reducer(setup({ periodStartDay: 26, openingBalance: 1_000_000 }), { type: 'shopping/set', items: list, dueDay: 28 });
@@ -954,5 +960,40 @@ describe('simulated months (property test)', () => {
     expect(coveredDaysChecked).toBeGreaterThan(1500);
     expect(daysWithAllowance).toBeGreaterThan(1000);
     expect(modes.size).toBe(3);
+  });
+});
+
+describe('gas cylinders', () => {
+  function refills(): AppState {
+    vi.setSystemTime(new Date('2026-09-26T05:00:00Z'));
+    let state = setup({ openingBalance: 1_000_000 });
+    for (const [id, date] of [['g1', '2026-06-01'], ['g2', '2026-07-16'], ['g3', '2026-08-30']] as const) {
+      state = reducer(state, { type: 'gas/purchase', purchase: { id, date, amount: 210_000, size: 12 } });
+    }
+    return state;
+  }
+
+  it('learns how long a cylinder lasts and plans the next refill', () => {
+    const state = refills();
+    const estimate = gasEstimate(state, '2026-09-26');
+    expect(estimate).toMatchObject({ purchases: 3, daysPerCylinder: 45, costPerDay: 4_667, monthlyCost: 140_000, nextPurchaseDate: '2026-10-14', daysLeft: 18, guessed: false });
+    expect(state.needs.filter((need) => !need.paid)).toMatchObject([{ title: 'Gas elpiji', amount: 210_000, dueDate: '2026-10-14', intervalDays: 45 }]);
+    expect(balance(state, '2026-09-26')).toBe(370_000);
+  });
+
+  it('guesses from the cylinder size after the first purchase and counts several cylinders', () => {
+    vi.setSystemTime(new Date('2026-09-26T05:00:00Z'));
+    let state = reducer(setup({ openingBalance: 500_000 }), { type: 'gas/purchase', purchase: { id: 'g1', date: '2026-09-20', amount: 44_000, size: 3, count: 2 } });
+    expect(gasEstimate(state, '2026-09-26')).toMatchObject({ daysPerCylinder: 10, guessed: true, nextPurchaseDate: '2026-10-10' });
+    state = reducer(state, { type: 'gas/purchase', purchase: { id: 'g2', date: '2026-10-06', amount: 44_000, size: 3, count: 2 } }, '2026-10-06');
+    // Two cylinders lasted 16 days: 8 days each.
+    expect(gasEstimate(state, '2026-10-06')).toMatchObject({ daysPerCylinder: 8, guessed: false, nextPurchaseDate: '2026-10-22' });
+    expect(state.needs.filter((need) => !need.paid)).toHaveLength(1);
+  });
+
+  it('shows how far above the monthly gas budget the usage is', () => {
+    const state = reducer(refills(), { type: 'gas/settings', monthlyBudget: 120_000 });
+    expect(gasEstimate(state, '2026-09-26').target).toEqual({ overBudget: 20_000 });
+    expect(() => validateState({ ...setup(), gas: { purchases: [{ id: 'x', date: MONDAY, amount: 10_000, count: 0 }] } })).toThrow();
   });
 });

@@ -110,6 +110,12 @@ export function BudgetCard({
         ) : (
           <span className="status-pill shortfall">
             Wajib kurang <Money amount={budget.shortfall} />
+            {budget.shortfallDate && (
+              <>
+                {" "}
+                mulai <DateLabel date={budget.shortfallDate} />
+              </>
+            )}
           </span>
         )}
       </div>
@@ -125,6 +131,7 @@ export function BudgetCard({
           </strong>
         )}
       </p>
+      <BudgetNote budget={budget} />
       <div className="budget-actions">
         <button className="button lime" onClick={checkPrice}>
           <Scale size={16} /> Cek sebelum beli
@@ -161,6 +168,12 @@ export function BudgetCard({
             <span>− Pengeluaran harian sisa periode</span>
             <Money amount={budget.dailyRemaining} />
           </div>
+          {budget.reservedAfterPeriod > 0 && (
+            <div className="daily-row">
+              <span>− Disiapkan sampai uang berikutnya masuk</span>
+              <Money amount={budget.reservedAfterPeriod} />
+            </div>
+          )}
           {budget.leftoverPot > 0 && (
             <div className="daily-row">
               <span>− Uang sisa (disimpan terpisah)</span>
@@ -168,7 +181,7 @@ export function BudgetCard({
             </div>
           )}
           <div className="daily-row total">
-            <span>= Uang bebas</span>
+            <span>= Uang bebas sampai akhir periode</span>
             <Money amount={budget.freeMoney} />
           </div>
           {budget.spentToday > 0 && (
@@ -178,12 +191,27 @@ export function BudgetCard({
             </div>
           )}
           <div className="daily-row">
-            <span>÷ {budget.daysLeft} hari (termasuk hari ini)</span>
+            <span>
+              {budget.cashLimitedUntil || (budget.perDay === 0 && budget.freeMoney > 0)
+                ? "Jatah per hari (dari uang yang sudah ada)"
+                : `÷ ${budget.daysLeft} hari (termasuk hari ini)`}
+            </span>
             <strong>
               <Money amount={budget.perDay} />
               /hari
             </strong>
           </div>
+          <div className="daily-row">
+            <span>Aman dipakai sekarang</span>
+            <Money amount={budget.safeNow} />
+          </div>
+          {budget.nextPeriodIncome && (
+            <p className="form-hint">
+              Gaji ± <Money amount={budget.nextPeriodIncome.amount} /> tanggal{" "}
+              <DateLabel date={budget.nextPeriodIncome.date} /> masuk di akhir
+              periode, jadi dihitung untuk periode berikutnya.
+            </p>
+          )}
           <div className="dashed-rule" />
           {budget.carryOver > 0 && (
             <div className="daily-row">
@@ -206,6 +234,37 @@ export function BudgetCard({
       </Collapse>
     </section>
   );
+}
+
+/** One line that explains a zero or limited allowance, so the number never looks arbitrary. */
+function BudgetNote({ budget }: { budget: ReturnType<typeof periodBudget> }) {
+  if (budget.shortfall > 0) return null;
+  const next = budget.nextIncome ?? budget.nextPeriodIncome;
+  if (budget.perDay === 0) {
+    return (
+      <p className="budget-note">
+        Belum ada uang untuk jajan.
+        {next ? (
+          <>
+            {" "}
+            Uang berikutnya ± <Money amount={next.amount} /> masuk{" "}
+            <DateLabel date={next.date} />.
+          </>
+        ) : (
+          " Catat uang masuk begitu uang bulanan datang."
+        )}
+      </p>
+    );
+  }
+  if (budget.cashLimitedUntil) {
+    return (
+      <p className="budget-note">
+        Jatah dijaga dari uang yang sudah ada. Naik lagi setelah uang masuk{" "}
+        <DateLabel date={budget.cashLimitedUntil} />.
+      </p>
+    );
+  }
+  return null;
 }
 
 /** Daily items scheduled on one date, with the "not used / leftover" actions. */
@@ -587,8 +646,17 @@ export function PurchaseCheck({ state }: { state: AppState }) {
             </p>
           ) : (
             <p>
-              Jangan dulu, uang wajib jadi kurang{" "}
-              <Money amount={result.shortfall} />.
+              {result.cashShort > 0 ? (
+                <>
+                  Jangan dulu, uangnya belum ada. Yang bisa dipakai sekarang{" "}
+                  <Money amount={result.cashNow} />.
+                </>
+              ) : (
+                <>
+                  Jangan dulu, uang wajib jadi kurang{" "}
+                  <Money amount={result.shortfall} />.
+                </>
+              )}
             </p>
           )}
         </div>

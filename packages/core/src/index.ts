@@ -175,6 +175,8 @@ export interface ForecastOptions {
 export interface ForecastDay {
   date: DateKey;
   income: number;
+  /** Part of `income` that is the estimated monthly salary paid on this day. */
+  salary: number;
   expenses: number;
   balance: number;
   workday: boolean;
@@ -219,10 +221,44 @@ export function localDate(date = new Date()): DateKey {
   return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
+// Civil-date arithmetic on day numbers (days since 1970-01-01), without allocating Date objects.
+// These run inside every loop of the forecast and budget, so they must stay cheap on phones.
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const pad2 = (value: number) => (value < 10 ? `0${value}` : String(value));
+const isLeapYear = (year: number) => (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+function daysFromCivil(year: number, month: number, day: number): number {
+  const y = month <= 2 ? year - 1 : year;
+  const era = Math.floor(y / 400);
+  const yearOfEra = y - era * 400;
+  const dayOfYear = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1;
+  const dayOfEra = yearOfEra * 365 + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100) + dayOfYear;
+  return era * 146097 + dayOfEra - 719468;
+}
+function civilFromDays(dayNumber: number): DateKey {
+  const z = dayNumber + 719468;
+  const era = Math.floor(z / 146097);
+  const dayOfEra = z - era * 146097;
+  const yearOfEra = Math.floor((dayOfEra - Math.floor(dayOfEra / 1460) + Math.floor(dayOfEra / 36524) - Math.floor(dayOfEra / 146096)) / 365);
+  const dayOfYear = dayOfEra - (365 * yearOfEra + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100));
+  const shifted = Math.floor((5 * dayOfYear + 2) / 153);
+  const day = dayOfYear - Math.floor((153 * shifted + 2) / 5) + 1;
+  const month = shifted + (shifted < 10 ? 3 : -9);
+  const year = yearOfEra + era * 400 + (month <= 2 ? 1 : 0);
+  return `${String(year).padStart(4, '0')}-${pad2(month)}-${pad2(day)}`;
+}
+const dayNumberOf = (date: DateKey) => daysFromCivil(Number(date.slice(0, 4)), Number(date.slice(5, 7)), Number(date.slice(8, 10)));
+/** JavaScript weekday number (Sunday = 0) of a civil date. */
+const weekdayOf = (date: DateKey) => (((dayNumberOf(date) + 4) % 7) + 7) % 7;
+
 export function isDateKey(value: unknown): value is DateKey {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T12:00:00.000Z`);
-  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  if (typeof value !== 'string' || value.length !== 10 || !DATE_PATTERN.test(value)) return false;
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(Number(value.slice(0, 4)), month);
 }
 
 function assertDate(value: unknown): asserts value is DateKey {
@@ -232,15 +268,50 @@ function assertDate(value: unknown): asserts value is DateKey {
 export function addDays(date: DateKey, days: number): DateKey {
   assertDate(date);
   if (!Number.isInteger(days)) throw new Error('Jumlah hari harus bilangan bulat.');
-  const value = new Date(`${date}T12:00:00.000Z`);
-  value.setUTCDate(value.getUTCDate() + days);
-  return value.toISOString().slice(0, 10);
+  return civilFromDays(dayNumberOf(date) + days);
 }
 
 export function daysBetween(from: DateKey, to: DateKey): number {
   assertDate(from);
   assertDate(to);
-  return Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86_400_000);
+  return dayNumberOf(to) - dayNumberOf(from);
+}
+
+// Lookup indexes, rebuilt only when an array is replaced (the reducer never mutates) or grows.
+const EMPTY_LEFTOVERS: Leftover[] = [];
+interface TransactionIndex { length: number; byId: Map<string, Transaction>; byDate: Map<DateKey, Transaction[]> }
+const transactionIndexes = new WeakMap<Transaction[], TransactionIndex>();
+function transactionIndex(transactions: Transaction[]): TransactionIndex {
+  let index = transactionIndexes.get(transactions);
+  if (!index || index.length !== transactions.length) {
+    index = { length: transactions.length, byId: new Map(), byDate: new Map() };
+    for (const transaction of transactions) {
+      index.byId.set(transaction.id, transaction);
+      const onDate = index.byDate.get(transaction.date);
+      if (onDate) onDate.push(transaction); else index.byDate.set(transaction.date, [transaction]);
+    }
+    transactionIndexes.set(transactions, index);
+  }
+  return index;
+}
+const attendanceIndexes = new WeakMap<Attendance[], { length: number; byDate: Map<DateKey, Attendance> }>();
+function attendanceOn(state: AppState, date: DateKey): Attendance | undefined {
+  let index = attendanceIndexes.get(state.attendance);
+  if (!index || index.length !== state.attendance.length) {
+    index = { length: state.attendance.length, byDate: new Map(state.attendance.map((entry) => [entry.date, entry])) };
+    attendanceIndexes.set(state.attendance, index);
+  }
+  return index.byDate.get(date);
+}
+const leftoverIndexes = new WeakMap<Leftover[], { length: number; byId: Map<string, Leftover> }>();
+function leftoverById(state: AppState, id: string): Leftover | undefined {
+  const leftovers = state.leftovers ?? EMPTY_LEFTOVERS;
+  let index = leftoverIndexes.get(leftovers);
+  if (!index || index.length !== leftovers.length) {
+    index = { length: leftovers.length, byId: new Map(leftovers.map((leftover) => [leftover.id, leftover])) };
+    leftoverIndexes.set(leftovers, index);
+  }
+  return index.byId.get(id);
 }
 
 export function currency(value: number): string {
@@ -294,10 +365,10 @@ export { INDONESIAN_HOLIDAYS, getHoliday, isNationalHoliday };
 export function isWorkday(state: AppState, date: DateKey): boolean {
   assertDate(date);
   if (state.profile.working === false) return false;
-  const entry = state.attendance.find((attendance) => attendance.date === date);
+  const entry = attendanceOn(state, date);
   if (entry) return entry.status === 'present' || entry.status === 'half';
   if (isNationalHoliday(date)) return false;
-  return state.profile.workDays.includes(new Date(`${date}T12:00:00Z`).getUTCDay());
+  return state.profile.workDays.includes(weekdayOf(date));
 }
 
 /**
@@ -305,28 +376,60 @@ export function isWorkday(state: AppState, date: DateKey): boolean {
  * so users only need to mark the days they did not work. Returns the same
  * object when nothing changes.
  */
+/** Normalises an attendance entry: future dates stay plans; `auto` is kept only when true. */
+function attendanceEntry(attendance: Attendance, today: DateKey): Attendance {
+  assertDate(attendance.date);
+  const entry: Attendance = { ...attendance, planned: attendance.date > today };
+  if (!entry.auto) delete entry.auto;
+  return entry;
+}
+
+/** The single ledger transaction a confirmed attendance entry produces (work pay and/or cash allowance). */
+function attendanceIncome(state: AppState, entry: Attendance): Transaction | null {
+  if (entry.planned || (entry.status !== 'present' && entry.status !== 'half')) return null;
+  const half = entry.status === 'half';
+  const workIncome = entry.income ?? Math.floor(state.profile.dailyIncome * (half ? 0.5 : 1));
+  const allowance = entry.allowance !== undefined
+    ? entry.allowance
+    : (state.profile.activityAllowance ? Math.floor(state.profile.activityAllowance * (half ? 0.5 : 1)) : 0);
+  // Monthly payroll pays the salary on payday; only the cash allowance arrives on the day.
+  const amount = state.profile.payrollCycle === 'monthly' ? allowance : workIncome + allowance;
+  if (amount <= 0) return null;
+  return state.profile.payrollCycle === 'monthly'
+    ? { id: `attendance:${entry.date}`, title: half ? 'Tunjangan aktivitas (½ hari)' : 'Tunjangan aktivitas (uang saku)', amount, type: 'income', category: 'Tunjangan', date: entry.date, attendanceDate: entry.date }
+    : { id: `attendance:${entry.date}`, title: half ? 'Kerja setengah hari' : 'Pendapatan kerja', amount, type: 'income', category: 'Kerja', date: entry.date, attendanceDate: entry.date };
+}
+
 export function applyAutoAttendance(state: AppState, today = localDate()): AppState {
   assertDate(today);
   if (state.profile.working === false) return state;
   let next = state;
-  const from = state.profile.autoAttendanceFrom;
-  if (!from) {
+  if (!state.profile.autoAttendanceFrom) {
     // Existing records start today; older unrecorded days are left untouched.
-    next = reducer(next, { type: 'profile/update', profile: { autoAttendanceFrom: today } });
+    next = reducer(next, { type: 'profile/update', profile: { autoAttendanceFrom: today } }, today);
   }
-  let date = next.profile.autoAttendanceFrom! > next.profile.startDate ? next.profile.autoAttendanceFrom! : next.profile.startDate;
-  while (date <= today) {
-    const entry = next.attendance.find((attendance) => attendance.date === date);
+  const from = next.profile.autoAttendanceFrom! > next.profile.startDate ? next.profile.autoAttendanceFrom! : next.profile.startDate;
+  // Collect every change first and apply them in one pass, so a long gap costs one validation.
+  const changes: Attendance[] = [];
+  for (let date = from; date <= today; date = addDays(date, 1)) {
+    const entry = attendanceOn(next, date);
     if (entry?.planned) {
       // A plan made in advance becomes the actual record once its day arrives.
       const { planned: _planned, ...confirmed } = entry;
-      next = reducer(next, { type: 'attendance/record', attendance: confirmed }, today);
+      changes.push(attendanceEntry(confirmed, today));
     } else if (!entry && isWorkday(next, date)) {
-      next = reducer(next, { type: 'attendance/record', attendance: { date, status: 'present', auto: true } }, today);
+      changes.push(attendanceEntry({ date, status: 'present', auto: true }, today));
     }
-    date = addDays(date, 1);
   }
-  return next;
+  if (!changes.length) return next;
+  const changed = new Set(changes.map((entry) => entry.date));
+  const transactions = next.transactions.filter((transaction) =>
+    !(transaction.attendanceDate && changed.has(transaction.attendanceDate)) && !(transaction.id.startsWith('attendance:') && changed.has(transaction.id.slice(11))));
+  for (const entry of changes) {
+    const income = attendanceIncome(next, entry);
+    if (income) transactions.push(income);
+  }
+  return validateState({ ...next, transactions, attendance: [...next.attendance.filter((entry) => !changed.has(entry.date)), ...changes] });
 }
 
 export function getMonthBounds(date: DateKey): { start: DateKey; end: DateKey } {
@@ -379,7 +482,7 @@ export function calculatePayroll(state: AppState, asOf = localDate()): PayrollSu
     let current = start;
     while (current <= end) {
       const isPastOrToday = current <= asOf;
-      const att = state.attendance.find((a) => a.date === current);
+      const att = attendanceOn(state, current);
       const scheduledWorkday = isWorkday(state, current);
 
       if (scheduledWorkday) totalWorkdays++;
@@ -498,7 +601,8 @@ function occurrences(state: AppState, asOf: DateKey, end: DateKey): Need[] {
 }
 
 export function forecast(state: AppState, options: ForecastOptions = {}): ForecastResult {
-  validateState(state);
+  // States produced by validateState/reducer are immutable; validate other inputs (imports, sync).
+  if (!validatedStates.has(state)) validateState(state);
   const asOf = options.asOf ?? localDate();
   assertDate(asOf);
   const horizonDays = options.horizonDays ?? 30;
@@ -525,10 +629,10 @@ export function forecast(state: AppState, options: ForecastOptions = {}): Foreca
 
   for (let index = 0; index < horizonDays; index++) {
     const date = addDays(asOf, index);
-    const attendance = state.attendance.find((entry) => entry.date === date);
+    const attendance = attendanceOn(state, date);
     const missed = absentDates.has(date);
     const workday = !missed && isWorkday(state, date);
-    const transactions = state.transactions.filter((transaction) => transaction.date === date);
+    const transactions = transactionIndex(state.transactions).byDate.get(date) ?? [];
     const workIncomeRecorded = transactions.some((transaction) => transaction.type === 'income' && transaction.attendanceDate === date);
     const actualIncome = index === 0 ? 0 : transactions.filter((transaction) =>
       transaction.type === 'income' && !(missed && transaction.attendanceDate === date),
@@ -551,7 +655,7 @@ export function forecast(state: AppState, options: ForecastOptions = {}): Foreca
         let prevWorkdays = 0;
         let c = pStart;
         while (c <= pEnd) {
-          const att = state.attendance.find((a) => a.date === c);
+          const att = attendanceOn(state, c);
           if (att) {
             if (att.status === 'present') prevWorkdays += 1;
             else if (att.status === 'half') prevWorkdays += 0.5;
@@ -593,7 +697,7 @@ export function forecast(state: AppState, options: ForecastOptions = {}): Foreca
     const dailyExpense = Math.max(0, state.profile.dailyBudget - regularSpending);
     // Daily items not yet recorded on this date are still to be handed out.
     const dailyItems = (state.dailyItems ?? []).reduce((sum, item) =>
-      !isScheduled(item, date) || date < item.since || transactions.some((transaction) => transaction.id === dailyTransactionId(item.id, date))
+      !isScheduled(item, date) || date < item.since || transactionIndex(state.transactions).byId.has(dailyTransactionId(item.id, date))
         ? sum : sum + Math.max(0, item.amount - leftoverFor(state, item.id, date)), 0);
     let expenses = dailyExpense + actualExpenses + dailyItems;
     running += income - expenses;
@@ -610,7 +714,7 @@ export function forecast(state: AppState, options: ForecastOptions = {}): Foreca
     if (workdays > 0) requiredDaily = Math.max(requiredDaily, Math.ceil(stillRequired / workdays));
     minBalance = Math.min(minBalance, running);
     const status: FinancialStatus = running < 0 ? 'shortfall' : running < state.profile.dailyBudget * 3 ? 'warning' : 'safe';
-    days.push({ date, income, expenses, balance: running, workday, needs: due, status });
+    days.push({ date, income, salary: monthlySalaryDisbursement, expenses, balance: running, workday, needs: due, status });
   }
   const shortfall = Math.max(0, -minBalance);
   const safeToSpend = Math.max(0, Math.min(currentBalance - reversedIncome - allocated, minBalance));
@@ -652,43 +756,10 @@ export function reducer(state: AppState, action: FinancialAction, today = localD
       break;
     }
     case 'attendance/record': {
-      const entry: Attendance = { ...action.attendance, planned: action.attendance.date > today };
-      if (!entry.auto) delete entry.auto;
-      assertDate(entry.date);
+      const entry = attendanceEntry(action.attendance, today);
       const transactions = state.transactions.filter((transaction) => transaction.attendanceDate !== entry.date && transaction.id !== `attendance:${entry.date}`);
-      if (!entry.planned && (entry.status === 'present' || entry.status === 'half')) {
-        const isMonthly = state.profile.payrollCycle === 'monthly';
-        const workIncome = entry.income ?? Math.floor(state.profile.dailyIncome * (entry.status === 'half' ? 0.5 : 1));
-        const allowance = entry.allowance !== undefined
-          ? entry.allowance
-          : (state.profile.activityAllowance ? Math.floor(state.profile.activityAllowance * (entry.status === 'half' ? 0.5 : 1)) : 0);
-        if (isMonthly) {
-          if (allowance > 0) {
-            transactions.push({
-              id: `attendance:${entry.date}`,
-              title: entry.status === 'half' ? 'Tunjangan aktivitas (½ hari)' : 'Tunjangan aktivitas (uang saku)',
-              amount: allowance,
-              type: 'income',
-              category: 'Tunjangan',
-              date: entry.date,
-              attendanceDate: entry.date,
-            });
-          }
-        } else {
-          const total = workIncome + allowance;
-          if (total > 0) {
-            transactions.push({
-              id: `attendance:${entry.date}`,
-              title: entry.status === 'half' ? 'Kerja setengah hari' : 'Pendapatan kerja',
-              amount: total,
-              type: 'income',
-              category: 'Kerja',
-              date: entry.date,
-              attendanceDate: entry.date,
-            });
-          }
-        }
-      }
+      const income = attendanceIncome(state, entry);
+      if (income) transactions.push(income);
       next = { ...state, transactions, attendance: [...state.attendance.filter((attendance) => attendance.date !== entry.date), entry] };
       break;
     }
@@ -746,8 +817,10 @@ export function reducer(state: AppState, action: FinancialAction, today = localD
     }
     case 'profile/update': {
       const profile = { ...state.profile, ...action.profile };
-      // Returning to work must not backfill the days spent not working.
-      if (state.profile.working === false && profile.working !== false) profile.autoAttendanceFrom = today;
+      // Returning to work or changing the work days must not backfill earlier days.
+      const scheduleChanged = action.profile.workDays !== undefined &&
+        (action.profile.workDays.length !== state.profile.workDays.length || action.profile.workDays.some((day) => !state.profile.workDays.includes(day)));
+      if ((state.profile.working === false && profile.working !== false) || scheduleChanged) profile.autoAttendanceFrom = today;
       next = { ...state, profile };
       break;
     }
@@ -859,6 +932,9 @@ export function reducer(state: AppState, action: FinancialAction, today = localD
   return validated;
 }
 
+/** States that passed validateState; the app treats states as immutable, so they need no re-check. */
+const validatedStates = new WeakSet<object>();
+
 /** Reject malformed imports/sync payloads before they can alter the ledger. */
 export function validateState(value: unknown): AppState {
   const fail = (message: string): never => { throw new Error(`Data keuangan tidak valid: ${message}`); };
@@ -966,6 +1042,7 @@ export function validateState(value: unknown): AppState {
       readingDates.add(reading.date);
     }
   }
+  validatedStates.add(state);
   return state;
 }
 
@@ -973,11 +1050,9 @@ export function validateState(value: unknown): AppState {
 // Daily items, leftovers ("uang sisa") and period budgets
 // ---------------------------------------------------------------------------
 
-const weekday = (date: DateKey) => new Date(`${date}T12:00:00Z`).getUTCDay();
-
 export function isScheduled(item: DailyItem, date: DateKey): boolean {
   if (item.skipHolidays && isNationalHoliday(date)) return false;
-  return item.days.includes(weekday(date));
+  return item.days.includes(weekdayOf(date));
 }
 
 export function dailyTransactionId(itemId: string, date: DateKey): string {
@@ -985,7 +1060,7 @@ export function dailyTransactionId(itemId: string, date: DateKey): string {
 }
 
 function leftoverFor(state: AppState, itemId: string, date: DateKey): number {
-  return (state.leftovers ?? []).find((leftover) => leftover.id === `sisa:${itemId}:${date}`)?.amount ?? 0;
+  return leftoverById(state, `sisa:${itemId}:${date}`)?.amount ?? 0;
 }
 
 function uniqueId(existing: string[], base: string): string {
@@ -1095,7 +1170,7 @@ export interface PeriodBudget {
   carryOver: number;
   /** Income that arrived during this period so far. */
   periodIncome: number;
-  /** Income still expected before the period ends (work income). */
+  /** Income still expected before the period ends (work income, salary, released savings). */
   expectedIncome: number;
   /** Unpaid needs due this period plus money set aside for later needs. */
   obligations: number;
@@ -1107,53 +1182,118 @@ export interface PeriodBudget {
   leftoverPot: number;
   leftovers: Leftover[];
   leftoverUsed: number;
-  /** Money free for snacks and wants over the rest of the period. */
+  /** Money free for snacks and wants by the END of the period, once all expected income arrived. */
   freeMoney: number;
-  /** Allowance for today, before today's spending. */
+  /**
+   * What can be spent right now without making any upcoming obligation this period unpayable.
+   * Never includes money that has not arrived yet.
+   */
+  safeNow: number;
+  /** Allowance for today, before today's spending. Never more than the money available in time. */
   perDay: number;
   spentToday: number;
   leftToday: number;
-  /** Positive when the period's money does not cover its obligations. */
+  /** Positive when obligations cannot all be paid on their due dates. */
   shortfall: number;
+  /** First day an obligation cannot be paid. */
+  shortfallDate?: DateKey;
   coveredByLeftover: boolean;
+  /** Set when today's allowance is held down because money arrives later in the period. */
+  cashLimitedUntil?: DateKey;
+  /** Next expected income (possibly after this period). */
+  nextIncome?: { date: DateKey; amount: number };
+  /** Salary due in the last days of this period; it funds the next period instead. */
+  nextPeriodIncome?: { date: DateKey; amount: number };
+  /** Obligations and daily items due after the period ends but before the next income arrives. */
+  reservedAfterPeriod: number;
+  /** Day-by-day cash after obligations (before snacks) until the next income, used for purchase checks. */
+  timeline: { date: DateKey; income: number; out: number; cash: number; inPeriod: boolean }[];
 }
 
 function isDiscretionary(transaction: Transaction): boolean {
   return transaction.type === 'expense' && !transaction.needId && !transaction.dailyItemId;
 }
 
+/** A salary landing this close to the period end is next period's money. */
+const NEXT_PERIOD_WINDOW_DAYS = 3;
+
 export function periodBudget(state: AppState, today = localDate()): PeriodBudget {
   assertDate(today);
   const { start, end } = periodBounds(today, state.profile.periodStartDay);
   const daysLeft = daysBetween(today, end) + 1;
+  const index = transactionIndex(state.transactions);
   const heldForNextPeriod = heldIncome(state, today);
   const money = balance(state, today) - heldForNextPeriod;
-  const releasedLater = state.transactions
-    .filter((transaction) => transaction.type === 'income' && transaction.date <= today && transaction.effectiveDate && transaction.effectiveDate > today && transaction.effectiveDate <= end)
-    .reduce((sum, transaction) => sum + transaction.amount, 0);
-  const expectedIncome = forecast(state, { asOf: today, horizonDays: daysLeft }).days.reduce((sum, day) => sum + day.income, 0) + releasedLater;
+  const slot = (date: DateKey) => daysBetween(today, date);
+  const dateAt = (i: number) => addDays(today, i);
+  const prediction = forecast(state, { asOf: today, horizonDays: Math.min(366, daysLeft + 45) });
+  // Money must also last from the period end until the next expected income arrives: obligations and
+  // daily items in that gap are reserved now (their snack allowance is not — that is next period's).
+  const nextAfterEnd = prediction.days.findIndex((day, i) => i >= daysLeft && day.income > 0);
+  const span = nextAfterEnd > 0 ? nextAfterEnd : daysLeft;
+  const horizonEnd = dateAt(span - 1);
+  const incomeOn = new Array<number>(span).fill(0);
+  const out = new Array<number>(span).fill(0);
 
+  // Income, on the day it actually arrives.
+  let nextPeriodIncome: PeriodBudget['nextPeriodIncome'];
+  let nextIncome: PeriodBudget['nextIncome'];
+  prediction.days.forEach((day, i) => {
+    let income = day.income;
+    if (i < daysLeft && day.salary > 0 && daysBetween(day.date, end) < NEXT_PERIOD_WINDOW_DAYS) {
+      income -= day.salary;
+      nextPeriodIncome = { date: day.date, amount: day.salary };
+    }
+    if (i < span) incomeOn[i] += income;
+    if (!nextIncome && i > 0 && day.income > 0) nextIncome = { date: day.date, amount: day.income };
+  });
+  for (const transaction of state.transactions) {
+    // Money set aside earlier becomes available on its effective date.
+    if (transaction.type === 'income' && transaction.date <= today && transaction.effectiveDate && transaction.effectiveDate > today && transaction.effectiveDate <= end) {
+      incomeOn[slot(transaction.effectiveDate)] += transaction.amount;
+    }
+    // Spending already scheduled for a later day (e.g. synced from elsewhere).
+    if (transaction.type === 'expense' && transaction.date > today && transaction.date <= horizonEnd) out[slot(transaction.date)] += transaction.amount;
+  }
+  const expectedIncome = incomeOn.slice(0, daysLeft).reduce((sum, value) => sum + value, 0);
+
+  // Obligations, on their due dates; allocations for later needs are set aside now.
   const obligationNeeds = occurrences(state, today, end);
-  const obligations = obligationNeeds.reduce((sum, need) => sum + remainingAmount(need), 0) +
-    state.needs.filter((need) => need.dueDate > end).reduce((sum, need) => sum + Math.min(need.saved, remainingAmount(need)), 0);
+  const gapNeeds = span > daysLeft ? occurrences(state, today, horizonEnd).filter((need) => need.dueDate > end) : [];
+  for (const need of [...obligationNeeds, ...gapNeeds]) out[slot(need.dueDate)] += remainingAmount(need);
+  const laterAllocations = state.needs.filter((need) => need.dueDate > horizonEnd).reduce((sum, need) => sum + Math.min(need.saved, remainingAmount(need)), 0);
+  out[0] += laterAllocations;
+  const obligations = obligationNeeds.reduce((sum, need) => sum + remainingAmount(need), 0) + laterAllocations;
+  let reservedAfterPeriod = gapNeeds.reduce((sum, need) => sum + remainingAmount(need), 0);
 
+  // Daily items: future days keep the full amount reserved; an unused part joins the pot on that day.
   let dailyRemaining = 0;
   const dailyPlans = (state.dailyItems ?? []).map((item): DailyItemPlan => {
     let days = 0;
     let total = 0;
     for (let date = item.since > start ? item.since : start; date <= end; date = addDays(date, 1)) {
       if (!isScheduled(item, date)) continue;
-      const recorded = state.transactions.find((transaction) => transaction.id === dailyTransactionId(item.id, date));
+      const recorded = index.byId.get(dailyTransactionId(item.id, date));
       const left = leftoverFor(state, item.id, date);
       const planned = recorded ? recorded.amount : Math.max(0, item.amount - left);
       if (planned > 0) days++;
       total += planned;
-      // Future days keep the full amount reserved; an unused part joins the pot on that day.
-      if (date > today) dailyRemaining += item.amount;
-      else if (!recorded) dailyRemaining += Math.max(0, item.amount - left);
+      if (date > today) {
+        dailyRemaining += item.amount;
+        out[slot(date)] += item.amount;
+      } else if (!recorded) {
+        dailyRemaining += Math.max(0, item.amount - left);
+        out[0] += Math.max(0, item.amount - left);
+      }
+    }
+    for (let date = addDays(end, 1); date <= horizonEnd; date = addDays(date, 1)) {
+      if (isScheduled(item, date) && date >= item.since) {
+        reservedAfterPeriod += item.amount;
+        out[slot(date)] += item.amount;
+      }
     }
     const scheduled = isScheduled(item, today) && today >= item.since;
-    const recorded = state.transactions.find((transaction) => transaction.id === dailyTransactionId(item.id, today))?.amount ?? 0;
+    const recorded = index.byId.get(dailyTransactionId(item.id, today))?.amount ?? 0;
     return { item, days, total, today: { scheduled, recorded, leftover: leftoverFor(state, item.id, today) } };
   });
 
@@ -1162,13 +1302,37 @@ export function periodBudget(state: AppState, today = localDate()): PeriodBudget
   const leftoverUsed = state.transactions.filter((transaction) => transaction.type === 'expense' && inPeriod(transaction.date))
     .reduce((sum, transaction) => sum + (transaction.fromLeftover ?? 0), 0);
   const leftoverPot = leftovers.reduce((sum, leftover) => sum + leftover.amount, 0) - leftoverUsed;
-
-  const spentToday = state.transactions.filter((transaction) => transaction.date === today && isDiscretionary(transaction))
+  const pot = Math.max(0, leftoverPot);
+  const spentToday = (index.byDate.get(today) ?? []).filter(isDiscretionary)
     .reduce((sum, transaction) => sum + transaction.amount - (transaction.fromLeftover ?? 0), 0);
-  const freeMoney = money + expectedIncome - obligations - dailyRemaining - Math.max(0, leftoverPot);
-  const shortfall = Math.max(0, -freeMoney);
-  // Once obligations are at risk there is no allowance left to offer.
-  const perDay = shortfall > 0 ? 0 : Math.floor((freeMoney + spentToday) / daysLeft);
+
+  // Walk the period day by day: money may only be spent once it has arrived.
+  const timeline: PeriodBudget['timeline'] = [];
+  let cash = money;
+  let lowest = Infinity;
+  let shortfallDate: DateKey | undefined;
+  let allowance = Infinity;
+  let binding = daysLeft - 1;
+  let freeMoney = 0;
+  for (let i = 0; i < span; i++) {
+    cash += incomeOn[i] - out[i];
+    const date = dateAt(i);
+    const free = cash - pot;
+    timeline.push({ date, income: incomeOn[i], out: out[i], cash: free, inPeriod: i < daysLeft });
+    if (i === daysLeft - 1) freeMoney = free;
+    if (free < lowest) lowest = free;
+    if (free < 0 && !shortfallDate) shortfallDate = date;
+    // Snacks are only budgeted for this period's days. Today's spending is part of today's allowance.
+    const limit = (free + spentToday) / Math.min(i + 1, daysLeft);
+    if (limit < allowance) { allowance = limit; binding = i; }
+  }
+  const shortfall = Math.max(0, -lowest);
+  const perDay = shortfall > 0 ? 0 : Math.max(0, Math.floor(allowance));
+  let cashLimitedUntil: DateKey | undefined;
+  if (binding < daysLeft - 1) {
+    const later = incomeOn.findIndex((income, i) => i > binding && i < daysLeft && income > 0);
+    if (later > 0) cashLimitedUntil = dateAt(later);
+  }
 
   const beforeStart = addDays(start, -1);
   const carryOver = state.profile.startDate < start ? balance(state, beforeStart) - heldIncome(state, beforeStart) : 0;
@@ -1180,8 +1344,9 @@ export function periodBudget(state: AppState, today = localDate()): PeriodBudget
   return {
     start, end, daysLeft, money, heldForNextPeriod, carryOver, periodIncome, expectedIncome,
     obligations, obligationNeeds, dailyRemaining, dailyPlans, leftoverPot, leftovers, leftoverUsed,
-    freeMoney, perDay, spentToday, leftToday: perDay - spentToday, shortfall,
-    coveredByLeftover: shortfall > 0 && leftoverPot >= shortfall,
+    freeMoney, safeNow: Math.max(0, lowest), perDay, spentToday, leftToday: perDay - spentToday, shortfall, shortfallDate,
+    coveredByLeftover: shortfall > 0 && lowest + pot >= 0,
+    cashLimitedUntil, nextIncome, nextPeriodIncome, reservedAfterPeriod, timeline,
   };
 }
 
@@ -1221,6 +1386,33 @@ export interface PurchaseCheck {
   /** Allowance per day for the rest of the period after buying. */
   perDayAfter: number;
   shortfall: number;
+  /** Part of the price that is more than the money in hand right now. */
+  cashShort: number;
+  /** Money in hand now that is free to spend without the leftover pot. */
+  cashNow: number;
+}
+
+/**
+ * Effect of spending `amount` now, `fromLeftover` of it out of the leftover pot. Money that arrives
+ * later in the period cannot pay for something bought today, so every later day's cash drops too.
+ */
+export function spendingImpact(budget: PeriodBudget, amount: number, fromLeftover = 0): { perDayAfter: number; shortfall: number; cashShort: number } {
+  const spend = Math.max(0, amount - fromLeftover);
+  // Money in hand right now, outside the leftover pot.
+  const cashNow = Math.max(0, budget.money - Math.max(0, budget.leftoverPot));
+  let lowest = Infinity;
+  let perDay = Infinity;
+  const remainingDays = budget.daysLeft - 1;
+  budget.timeline.forEach((day, i) => {
+    lowest = Math.min(lowest, day.cash - spend);
+    if (i > 0 && remainingDays > 0) perDay = Math.min(perDay, (day.cash - spend) / Math.min(i, remainingDays));
+  });
+  return {
+    perDayAfter: Number.isFinite(perDay) ? Math.max(0, Math.floor(perDay)) : 0,
+    shortfall: Number.isFinite(lowest) ? Math.max(0, -lowest) : 0,
+    /** More than the money that is actually in hand now. */
+    cashShort: Math.max(0, spend - cashNow),
+  };
 }
 
 /** Pays from today's allowance first, then the leftover pot, then the rest of the period. */
@@ -1229,15 +1421,16 @@ export function checkPurchase(budget: PeriodBudget, amount: number): PurchaseChe
   const fromAllowance = Math.min(amount, Math.max(0, budget.leftToday));
   const fromLeftover = Math.min(amount - fromAllowance, Math.max(0, budget.leftoverPot));
   const rest = amount - fromAllowance - fromLeftover;
-  const freeAfter = budget.freeMoney - fromAllowance - rest;
-  const remainingDays = budget.daysLeft - 1;
+  const impact = spendingImpact(budget, amount, fromLeftover);
   return {
-    verdict: rest === 0 ? (fromLeftover > 0 ? 'sisa' : 'jatah') : freeAfter >= 0 ? 'turun' : 'bahaya',
+    verdict: rest === 0 ? (fromLeftover > 0 ? 'sisa' : 'jatah') : impact.shortfall === 0 ? 'turun' : 'bahaya',
     fromAllowance,
     fromLeftover,
     leftoverAfter: Math.max(0, budget.leftoverPot) - fromLeftover,
-    perDayAfter: remainingDays > 0 ? Math.max(0, Math.floor(freeAfter / remainingDays)) : 0,
-    shortfall: Math.max(0, -freeAfter),
+    perDayAfter: impact.perDayAfter,
+    shortfall: impact.shortfall,
+    cashShort: impact.cashShort,
+    cashNow: Math.max(0, budget.money - Math.max(0, budget.leftoverPot)),
   };
 }
 

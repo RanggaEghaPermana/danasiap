@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addDays, applyAutoAttendance, applyAutoDaily, applyAutomations, balance, calculatePayroll, checkPurchase, electricityEstimate,
-  migrateDailyBudget, periodBounds, periodBudget, periodHistory, shoppingTotal, defaultState, demoState, forecast, getHoliday, getMonthBounds,
+  daysBetween, isDateKey, migrateDailyBudget, periodBounds, periodBudget, periodHistory, shoppingTotal, defaultState, demoState, forecast, getHoliday, getMonthBounds,
   getPreviousMonthBounds, isNationalHoliday, isWorkday, localDate, reducer, remainingAmount, validateState, type AppState, type Need,
 } from '../src/index';
 
@@ -774,5 +774,185 @@ describe('electricity tokens', () => {
     expect(() => validateState({ ...setup(), shopping: { dueDay: 1, items: [{ id: 'x', name: 'X', qty: 1, price: 1, image: 'javascript:alert(1)' }] } })).toThrow();
     expect(() => validateState({ ...setup(), shopping: { dueDay: 1, items: [{ id: 'x', name: 'X', qty: 1, price: 1, image: `data:image/jpeg;base64,${'A'.repeat(90_000)}` }] } })).toThrow();
     expect(() => validateState({ ...setup(), electricity: { purchases: [{ id: 'p', date: MONDAY, amount: 100, kwh: -1 }], readings: [] } })).toThrow();
+  });
+});
+
+describe('allowance follows when money actually arrives', () => {
+  function monthlyWorker(overrides: Partial<AppState['profile']> = {}): AppState {
+    const today = '2026-09-26';
+    vi.setSystemTime(new Date(`${today}T05:00:00Z`));
+    const state = defaultState(today);
+    state.profile = { ...state.profile, name: 'Egha', working: true, dailyIncome: 70_000, activityAllowance: 50_000, payrollCycle: 'monthly', payday: 5, periodStartDay: 6, workDays: [1, 2, 3, 4, 5], openingBalance: 0, ...overrides };
+    return applyAutomations(state, today);
+  }
+
+  it('does not let a salary that has not arrived be spent (reported: saldo Rp0, jatah Rp184.000)', () => {
+    const budget = periodBudget(monthlyWorker(), '2026-09-26');
+    expect(budget.money).toBe(0);
+    expect(budget.perDay).toBe(0);
+    expect(budget.safeNow).toBe(0);
+    expect(budget.nextIncome).toEqual({ date: '2026-09-28', amount: 50_000 });
+    // Paid on the last day of the 6th–5th period, the salary is next period's money.
+    expect(budget.nextPeriodIncome).toEqual({ date: '2026-10-05', amount: 1_540_000 });
+  });
+
+  it('spreads cash in hand over the days until more money arrives', () => {
+    const budget = periodBudget(monthlyWorker({ workDays: [1, 2, 3, 4, 5, 6] }), '2026-09-26');
+    expect(budget.money).toBe(50_000);
+    expect(budget.perDay).toBe(25_000); // Saturday's pocket money must also cover Sunday.
+    expect(budget.cashLimitedUntil).toBe('2026-09-28');
+  });
+
+  it('spreads the salary over the period when the period starts on payday', () => {
+    vi.setSystemTime(new Date('2026-10-05T05:00:00Z'));
+    let state = monthlyWorker({ periodStartDay: 5 });
+    state = applyAutomations(state, '2026-10-05');
+    const budget = periodBudget(state, '2026-10-05');
+    expect(budget.nextPeriodIncome).toBeUndefined();
+    expect(budget.perDay).toBeGreaterThan(0);
+    expect(budget.perDay * budget.daysLeft).toBeLessThanOrEqual(budget.money + budget.expectedIncome);
+  });
+
+  it('flags a bill that is due before the salary arrives', () => {
+    vi.setSystemTime(new Date('2026-09-10T05:00:00Z'));
+    let state = setup({ openingBalance: 100_000, dailyIncome: 0, periodStartDay: 25, payrollCycle: 'monthly', payday: 25, working: true });
+    state.needs = [need({ id: 'cicilan', amount: 300_000, dueDate: '2026-09-20' })];
+    const budget = periodBudget(state, '2026-09-10');
+    expect(budget.shortfall).toBe(200_000);
+    expect(budget.shortfallDate).toBe('2026-09-20');
+    expect(budget.perDay).toBe(0);
+  });
+
+  it('keeps money for bills due after the period but before the next income', () => {
+    vi.setSystemTime(new Date('2026-09-26T05:00:00Z'));
+    // Daily worker, Mon–Fri. The period ends on Friday 2 Oct; the next pay is Monday 5 Oct.
+    const state = setup({ openingBalance: 500_000, dailyIncome: 0, periodStartDay: 3, working: false });
+    state.needs = [need({ id: 'sewa', amount: 200_000, dueDate: '2026-10-04' })];
+    const withGap = periodBudget({ ...state, profile: { ...state.profile, working: true, dailyIncome: 100_000 } }, '2026-09-26');
+    expect(withGap.end).toBe('2026-10-02');
+    expect(withGap.reservedAfterPeriod).toBe(200_000);
+    expect(withGap.timeline.at(-1)!.date).toBe('2026-10-04');
+  });
+
+  it('refuses a purchase that only later income could pay for', () => {
+    const state = monthlyWorker({ workDays: [1, 2, 3, 4, 5, 6] });
+    const budget = periodBudget(state, '2026-09-26');
+    expect(checkPurchase(budget, 50_000).verdict).toBe('turun');
+    expect(checkPurchase(budget, 60_000)).toMatchObject({ verdict: 'bahaya', shortfall: 10_000 });
+    expect(checkPurchase(periodBudget(monthlyWorker(), '2026-09-26'), 20_000)).toMatchObject({ verdict: 'bahaya', cashShort: 20_000, cashNow: 0 });
+  });
+
+  it('does not backfill attendance when the work days change', () => {
+    vi.setSystemTime(new Date('2026-09-26T05:00:00Z'));
+    let state = applyAutomations(setup({ startDate: '2026-09-01', autoAttendanceFrom: '2026-09-01', workDays: [1, 2, 3, 4, 5] }), '2026-09-26');
+    const before = state.attendance.length;
+    state = reducer(state, { type: 'profile/update', profile: { workDays: [1, 2, 3, 4, 5, 6] } }, '2026-09-26');
+    state = applyAutomations(state, '2026-09-26');
+    // Only today (a Saturday) is added, not the Saturdays earlier in September.
+    expect(state.attendance.length).toBe(before + 1);
+  });
+});
+
+describe('date arithmetic', () => {
+  it('matches the calendar across centuries and rejects impossible dates', () => {
+    let date = '1899-12-25';
+    let reference = new Date('1899-12-25T12:00:00Z');
+    for (let i = 0; i < 9000; i++) {
+      const step = (i % 37) + 1;
+      date = addDays(date, step);
+      reference = new Date(reference.getTime() + step * 86_400_000);
+      expect(date).toBe(reference.toISOString().slice(0, 10));
+    }
+    expect(addDays('2024-03-01', -1)).toBe('2024-02-29');
+    expect(addDays('2100-03-01', -1)).toBe('2100-02-28');
+    expect(daysBetween('2026-01-31', '2026-03-01')).toBe(29);
+    for (const bad of ['2026-02-29', '2026-13-01', '2026-00-10', '2026-04-31', '26-01-01', '2026-1-01', '2026-01-01T00']) expect(isDateKey(bad)).toBe(false);
+    expect(isDateKey('2028-02-29')).toBe(true);
+  });
+});
+
+describe('simulated months (property test)', () => {
+  function random(seed: number) {
+    return () => {
+      seed = (seed + 0x6D2B79F5) | 0;
+      let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it('following the allowance never overdraws and never breaks a covered period', { timeout: 120_000 }, () => {
+    let checkedDays = 0;
+    let coveredPeriods = 0;
+    let coveredDaysChecked = 0;
+    let daysWithAllowance = 0;
+    let spent = 0;
+    const modes = new Set<string>();
+    for (let seed = 1; seed <= 48; seed++) {
+      const rnd = random(seed);
+      const pick = <T,>(items: readonly T[]) => items[Math.floor(rnd() * items.length)];
+      const start = addDays('2026-01-05', Math.floor(rnd() * 300));
+      const mode = pick(['daily', 'monthly', 'none'] as const);
+      const payday = pick([1, 5, 10, 25, 28]);
+      const periodStartDay = mode === 'monthly' ? pick([payday, payday, 1, 15]) : pick([1, 5, 15, 25, 26, 28]);
+      vi.setSystemTime(new Date(`${start}T05:00:00Z`));
+      let state = defaultState(start);
+      state.profile = {
+        ...state.profile, name: `Sim ${seed}`, working: mode !== 'none', dailyIncome: mode === 'none' ? 0 : pick([80_000, 120_000]),
+        activityAllowance: mode === 'none' ? 0 : pick([0, 20_000]), payrollCycle: mode === 'monthly' ? 'monthly' : 'daily', payday,
+        periodStartDay, openingBalance: pick([0, 300_000, 1_500_000, 4_000_000]), workDays: pick([[1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6]]),
+      };
+      state.dailyItems = Array.from({ length: Math.floor(rnd() * 3) }, (_, i) => ({
+        id: `d${i}`, title: `Harian ${i}`, amount: pick([10_000, 25_000, 50_000]), days: pick([[1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5, 6]]), skipHolidays: rnd() < 0.5, since: start,
+      }));
+      state.needs = Array.from({ length: Math.floor(rnd() * 3) }, (_, i) => need({
+        id: `n${i}`, title: `Tagihan ${i}`, amount: pick([100_000, 250_000, 600_000]), dueDate: addDays(start, Math.floor(rnd() * 60)),
+        kind: rnd() < 0.5 ? 'recurring' : 'debt', intervalDays: 30,
+      }));
+      state = validateState(state);
+      let periodStart = '';
+      let periodCovered = false;
+      for (let day = 0; day < 75; day++) {
+        const today = addDays(start, day);
+        vi.setSystemTime(new Date(`${today}T05:00:00Z`));
+        state = applyAutomations(state, today);
+        const period = periodBounds(today, state.profile.periodStartDay);
+        // Monthly money arrives as predicted; near a period end it is kept for the next period.
+        if (mode === 'monthly') {
+          const salary = forecast(state, { asOf: today, horizonDays: 1 }).days[0].salary;
+          if (salary > 0) state = reducer(state, { type: 'transaction/add', transaction: { id: `gaji-${today}`, title: 'Gaji', amount: salary, type: 'income', category: 'Gaji', date: today, ...(daysBetween(today, period.end) < 3 ? { effectiveDate: addDays(period.end, 1) } : {}) } }, today);
+        }
+        if (mode === 'none' && Number(today.slice(8, 10)) === state.profile.periodStartDay) {
+          state = reducer(state, { type: 'transaction/add', transaction: { id: `kiriman-${today}`, title: 'Kiriman', amount: 3_000_000, type: 'income', category: 'Kiriman', date: today } }, today);
+        }
+        const budget = periodBudget(state, today);
+        if (budget.start !== periodStart) {
+          periodStart = budget.start;
+          periodCovered = budget.shortfall === 0;
+          if (periodCovered) coveredPeriods++;
+        } else if (periodCovered) {
+          // Everything in this period was known at its start; following the plan must keep it covered.
+          expect({ seed, today, shortfall: budget.shortfall }).toEqual({ seed, today, shortfall: 0 });
+          coveredDaysChecked++;
+        }
+        modes.add(mode);
+        expect(budget.perDay).toBeGreaterThanOrEqual(0);
+        expect(budget.perDay).toBeLessThanOrEqual(Math.max(0, budget.safeNow));
+        // Pay what is due, then spend exactly today's allowance.
+        for (const due of state.needs.filter((entry) => !entry.paid && entry.dueDate <= today)) {
+          if (balance(state, today) >= remainingAmount(due)) state = reducer(state, { type: 'need/pay', id: due.id, date: today }, today);
+        }
+        if (budget.perDay > 0) {daysWithAllowance++; spent += budget.perDay;}
+        if (budget.perDay > 0) state = reducer(state, { type: 'transaction/add', transaction: { id: `jajan-${today}`, title: 'Jajan', amount: budget.perDay, type: 'expense', category: 'Jajan', date: today } }, today);
+        if (budget.shortfall === 0) expect({ seed, today, balance: balance(state, today) >= 0 }).toEqual({ seed, today, balance: true });
+        checkedDays++;
+      }
+    }
+    console.log(JSON.stringify({ checkedDays, coveredPeriods, coveredDaysChecked, daysWithAllowance, spent, modes: [...modes] }));
+    expect(checkedDays).toBe(48 * 75);
+    expect(coveredPeriods).toBeGreaterThan(40);
+    expect(coveredDaysChecked).toBeGreaterThan(1500);
+    expect(daysWithAllowance).toBeGreaterThan(1000);
+    expect(modes.size).toBe(3);
   });
 });

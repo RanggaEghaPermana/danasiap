@@ -562,8 +562,8 @@ export function Plans({
           </div>
         ) : (
           <div>
-            <span>Uang bebas periode ini</span>
-            <Money amount={Math.max(0, periodBudget(state).freeMoney)} />
+            <span>Aman dipakai sekarang</span>
+            <Money amount={periodBudget(state).safeNow} />
           </div>
         )}
       </div>

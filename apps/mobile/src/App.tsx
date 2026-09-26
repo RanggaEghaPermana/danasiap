@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, AppState as NativeAppState, BackHandler, Dimensions, GestureResponderEvent, Image, Keyboard, LayoutChangeEvent, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, UIManager, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Animated, AppState as NativeAppState, BackHandler, Dimensions, GestureResponderEvent, Image, Keyboard, LayoutChangeEvent, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Feather } from '@expo/vector-icons';
 import { useFonts, BarlowCondensed_500Medium, BarlowCondensed_600SemiBold } from '@expo-google-fonts/barlow-condensed';
 import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans';
 import Svg, { Circle, ClipPath, Defs, G, Path, Pattern, Rect } from 'react-native-svg';
-import { AppState, Attendance, DailyItem, FinancialAction, MAX_ITEM_IMAGE, Need, TOKEN_TARIFF, addDays, applyAutomations, balance, calculatePayroll, checkPurchase, currency, dailyTransactionId, defaultState, demoState, electricityEstimate, forecast, formatThousands, getHoliday, isElectricityNeed, isNationalHoliday, isScheduled, isShoppingNeed, isWorkday, localDate, migrateDailyBudget, parseThousands, periodBudget, periodHistory, reducer, remainingAmount, shoppingDueDate, shoppingTotal, validateState } from '@danasiap/core';
+import { AppState, Attendance, DailyItem, FinancialAction, MAX_ITEM_IMAGE, Need, TOKEN_TARIFF, addDays, applyAutomations, balance, calculatePayroll, checkPurchase, currency, dailyTransactionId, defaultState, demoState, electricityEstimate, forecast, formatThousands, getHoliday, isElectricityNeed, isNationalHoliday, isScheduled, isShoppingNeed, isWorkday, localDate, migrateDailyBudget, parseThousands, periodBudget, periodHistory, reducer, remainingAmount, shoppingDueDate, shoppingTotal, spendingImpact, validateState } from '@danasiap/core';
 import { loadPlan, savePlan } from './storage';
 import { DialogHost, showDialog } from './dialog';
 import { enableReminders, scheduleReminders } from './notifications';
@@ -15,11 +15,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { SaveFormat, manipulateAsync } from 'expo-image-manipulator';
 import * as Clipboard from 'expo-clipboard';
 import { colors as c, styles as s } from './theme';
-import { Appear, BlurLayer, Collapse, BlurTarget, CrossBlur, FadeBg, FlyLayer, PopIn, PressScale, RollingValue, SegmentPills, SheetModal, StaggerList, T, Veiled, exit, fade, flyChip, isReducedMotion, layoutSpring, measure, pointOf, spring, useReducedMotion, useVeil } from './motion';
+import { Appear, BlurLayer, Collapse, BlurTarget, CrossBlur, FadeBg, FlyLayer, PopIn, PressScale, RollingValue, SegmentPills, SheetModal, StaggerList, T, Veiled, exit, fade, flyChip, isReducedMotion, measure, pointOf, spring, useReducedMotion, useVeil } from './motion';
 
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 type IconName = React.ComponentProps<typeof Feather>['name'];
 type Tab = 'home' | 'needs' | 'calendar' | 'insights';
@@ -147,10 +144,7 @@ function Chip({label, active, onPress}: {label: string; active: boolean; onPress
     <AnimatedPressable
       accessibilityLabel={label}
       accessibilityState={{selected: active}}
-      onPress={() => {
-        layoutSpring();
-        onPress();
-      }}
+      onPress={onPress}
       style={s.tab}
     >
       <FadeBg on={active} color={c.lime} radius={22} />
@@ -345,7 +339,8 @@ function DanaSiap() {
   const [leftoverInput, setLeftoverInput] = useState('');
   const [checkAmount, setCheckAmount] = useState('');
   const [useLeftover, setUseLeftover] = useState<boolean | null>(null);
-  const [forNextPeriod, setForNextPeriod] = useState(false);
+  // null = follow the default: money recorded in the last days of a period is next month's money.
+  const [forNextPeriod, setForNextPeriod] = useState<boolean | null>(null);
   const [shopDraft, setShopDraft] = useState<ShopDraft[]>([]);
   const [shopDueDay, setShopDueDay] = useState('1');
   const [shopMode, setShopMode] = useState<'edit' | 'buy'>('edit');
@@ -450,6 +445,7 @@ function DanaSiap() {
   }
   function open(next: Sheet) {
     setFormError(''); setCloudMessage(''); setSheet(next);
+    if (next === 'expense' || next === 'income') setForNextPeriod(null);
     if (next === 'expense' || next === 'income' || next === 'need') setForm({title: '', amount: '', date: today, category: 'Makan', kind: 'recurring', interval: '7', saved: '', priority: 'essential'});
     if (next === 'setup') setProfile({name: state.profile.name, dailyIncome: state.profile.dailyIncome ? formatThousands(state.profile.dailyIncome) : '', periodStartDay: String(state.profile.periodStartDay ?? 1), openingBalance: state.profile.openingBalance ? formatThousands(state.profile.openingBalance) : '', workDays: [...state.profile.workDays], activityAllowance: state.profile.activityAllowance ? formatThousands(state.profile.activityAllowance) : '', payrollCycle: state.profile.payrollCycle ?? 'daily', payday: String(state.profile.payday ?? 5), avatarUrl: state.profile.avatarUrl, working: state.profile.working !== false});
     if (next === 'expense' || next === 'income') {setUseLeftover(null); setForNextPeriod(false);}
@@ -501,8 +497,8 @@ function DanaSiap() {
     const on = available && (useLeftover ?? over);
     const from = !on ? 0 : useLeftover === null ? checkPurchase(budget, amount).fromLeftover : Math.min(pot, amount);
     const rest = amount - from;
-    const freeAfter = budget.freeMoney - rest;
-    const hint = form.date !== today ? '' : freeAfter < 0 ? `Uang wajib jadi kurang ${currency(-freeAfter)}.` : rest > Math.max(0, budget.leftToday) ? `Jatah jajan jadi ${currency(budget.daysLeft > 1 ? Math.floor(freeAfter / (budget.daysLeft - 1)) : 0)}/hari sampai ${shortDate(budget.end)}.` : from > 0 ? `${rest > 0 ? `${currency(rest)} dari jatah hari ini + ` : ''}${currency(from)} dari Uang Sisa (Uang Sisa tinggal ${currency(pot - from)}).` : 'Masih masuk jatah jajan hari ini.';
+    const impact = spendingImpact(budget, amount, from);
+    const hint = form.date !== today ? '' : impact.cashShort > 0 ? `Uangnya belum ada. Yang bisa dipakai sekarang ${currency(Math.max(0, budget.money - Math.max(0, budget.leftoverPot)))}.` : impact.shortfall > 0 ? `Uang wajib jadi kurang ${currency(impact.shortfall)}.` : rest > Math.max(0, budget.leftToday) ? `Jatah jajan jadi ${currency(impact.perDayAfter)}/hari sampai ${shortDate(budget.end)}.` : from > 0 ? `${rest > 0 ? `${currency(rest)} dari jatah hari ini + ` : ''}${currency(from)} dari Uang Sisa (Uang Sisa tinggal ${currency(pot - from)}).` : 'Masih masuk jatah jajan hari ini.';
     return {available, on, from, hint};
   }
   function act(action: FinancialAction, message: string) {
@@ -521,7 +517,7 @@ function DanaSiap() {
     } else {
       const income = sheet === 'income';
       const fromLeftover = income ? 0 : leftoverPlan(amount).from;
-      const effectiveDate = income && forNextPeriod && budget.daysLeft <= 3 ? addDays(budget.end, 1) : undefined;
+      const effectiveDate = income && (forNextPeriod ?? true) && budget.daysLeft <= 3 ? addDays(budget.end, 1) : undefined;
       if (dispatch({type: 'transaction/add', transaction: {id: uid(), title, amount, date: form.date, category: income ? 'Pemasukan lain' : form.category, type: income ? 'income' : 'expense', ...(fromLeftover > 0 ? {fromLeftover} : {}), ...(effectiveDate ? {effectiveDate} : {})}})) {
         setSheet(null);
         notify(`${income ? 'Uang masuk' : 'Uang keluar'} ${currency(amount)} tersimpan · ${title}.${fromLeftover > 0 ? ` ${currency(fromLeftover)} diambil dari Uang Sisa.` : ''}${effectiveDate ? ` Dihitung mulai ${shortDate(effectiveDate)}.` : ''}`);
@@ -870,6 +866,11 @@ function DanaSiap() {
     </View>;
   }
   const todayPlans = budget.dailyPlans.filter(p => p.today.scheduled);
+  // Explains a zero or limited allowance, so the number never looks arbitrary.
+  const nextMoney = budget.nextIncome ?? budget.nextPeriodIncome;
+  const budgetNote = budget.shortfall > 0 ? '' : budget.perDay === 0
+    ? `Belum ada uang untuk jajan.${nextMoney ? ` Uang berikutnya ± ${currency(nextMoney.amount)} masuk ${shortDate(nextMoney.date)}.` : ' Catat uang masuk begitu uang bulanan datang.'}`
+    : budget.cashLimitedUntil ? `Jatah dijaga dari uang yang sudah ada. Naik lagi setelah uang masuk ${shortDate(budget.cashLimitedUntil)}.` : '';
   const budgetCard = <View style={s.section}>
     <PanelNotch />
     <View style={s.between}><Text style={s.mini}>{`${shortDate(budget.start)} – ${shortDate(budget.end)} · ${budget.daysLeft === 1 ? 'hari terakhir' : `${budget.daysLeft} hari lagi`}`}</Text><Icon name="calendar" size={15} color={c.muted} /></View>
@@ -878,26 +879,30 @@ function DanaSiap() {
       <RollingValue value={currency(Math.max(0, budget.leftToday))} bg={c.white} containerStyle={{alignSelf: 'flex-start', marginTop: 2}} style={[s.number, {fontSize: 36}]} />
       <Text style={[s.mini, budget.leftToday < 0 && {color: c.red}]}>{budget.leftToday < 0 ? `Lebih ${currency(-budget.leftToday)} dari jatah ${currency(budget.perDay)} hari ini` : `dari ${currency(budget.perDay)} · terpakai ${currency(budget.spentToday)}`}</Text>
     </View>
+    {budgetNote ? <View style={{backgroundColor: '#F1F6E7', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12}}><Text style={[s.muted, {color: '#55604A'}]}>{budgetNote}</Text></View> : null}
     <View style={[s.row, {gap: 9, padding: 11, borderRadius: 14, backgroundColor: budget.shortfall === 0 ? '#ECF2DE' : budget.coveredByLeftover ? '#FBF3E0' : '#FDF0EE'}]}>
       <Icon name={budget.shortfall === 0 ? 'shield' : 'alert-circle'} size={16} color={budget.shortfall > 0 && !budget.coveredByLeftover ? c.red : c.ink} />
-      <Text style={[s.body, {flex: 1}, budget.shortfall > 0 && !budget.coveredByLeftover && {color: c.red}]}>{budget.shortfall === 0 ? '✓ Wajib aman' : budget.coveredByLeftover ? `Wajib aman kalau pakai ${currency(budget.shortfall)} dari Uang Sisa` : `Wajib kurang ${currency(budget.shortfall)}`}</Text>
+      <Text style={[s.body, {flex: 1}, budget.shortfall > 0 && !budget.coveredByLeftover && {color: c.red}]}>{budget.shortfall === 0 ? '✓ Wajib aman' : budget.coveredByLeftover ? `Wajib aman kalau pakai ${currency(budget.shortfall)} dari Uang Sisa` : `Wajib kurang ${currency(budget.shortfall)}${budget.shortfallDate ? ` mulai ${shortDate(budget.shortfallDate)}` : ''}`}</Text>
     </View>
     <Collapse visible={showBreakdown}><StaggerList visible={showBreakdown} origin="bottom" bg={c.white} style={{gap: 8}}>
       {line('Uang sekarang', currency(budget.money))}
       {budget.expectedIncome > 0 && line('+ Pemasukan yang masih akan masuk', currency(budget.expectedIncome))}
       {line('− Kebutuhan wajib', currency(budget.obligations))}
       {line('− Pengeluaran harian sisa periode', currency(budget.dailyRemaining))}
+      {budget.reservedAfterPeriod > 0 && line('− Disiapkan sampai uang berikutnya masuk', currency(budget.reservedAfterPeriod))}
       {budget.leftoverPot > 0 && line('− Uang sisa (dipisah)', currency(budget.leftoverPot))}
       <View style={s.divider} />
-      {line('= Uang bebas', currency(budget.freeMoney), true)}
-      {line(`÷ ${budget.daysLeft} hari${budget.spentToday > 0 ? ` (termasuk jajan hari ini ${currency(budget.spentToday)})` : ''}`, `${currency(budget.perDay)}/hari`)}
+      {line('= Uang bebas sampai akhir periode', currency(budget.freeMoney), true)}
+      {line(budget.cashLimitedUntil || (budget.perDay === 0 && budget.freeMoney > 0) ? 'Jatah per hari (dari uang yang sudah ada)' : `÷ ${budget.daysLeft} hari${budget.spentToday > 0 ? ` (termasuk jajan hari ini ${currency(budget.spentToday)})` : ''}`, `${currency(budget.perDay)}/hari`)}
+      {line('Aman dipakai sekarang', currency(budget.safeNow))}
+      {budget.nextPeriodIncome ? <Text style={s.muted}>{`Gaji ± ${currency(budget.nextPeriodIncome.amount)} tanggal ${shortDate(budget.nextPeriodIncome.date)} masuk di akhir periode, jadi dihitung untuk periode berikutnya.`}</Text> : null}
       <View style={s.divider} />
       {budget.carryOver > 0 && line('Sisa periode lalu', currency(budget.carryOver))}
       {line('Uang masuk periode ini', currency(budget.periodIncome))}
       {budget.heldForNextPeriod > 0 && <Text style={s.muted}>{currency(budget.heldForNextPeriod)} disimpan untuk periode berikutnya, belum dihitung di sini.</Text>}
     </StaggerList></Collapse>
     <View style={[s.row, {gap: 8}]}>
-      <View style={{flex: 1}}><Button title={showBreakdown ? 'Tutup hitungan' : 'Lihat hitungan'} secondary icon={showBreakdown ? 'chevron-up' : 'list'} onPress={() => {layoutSpring(); setShowBreakdown(!showBreakdown);}} /></View>
+      <View style={{flex: 1}}><Button title={showBreakdown ? 'Tutup hitungan' : 'Lihat hitungan'} secondary icon={showBreakdown ? 'chevron-up' : 'list'} onPress={() => setShowBreakdown(!showBreakdown)} /></View>
       <View style={{flex: 1}}><Button title="Cek sebelum beli" icon="search" onPress={() => open('check')} /></View>
     </View>
   </View>;
@@ -912,7 +917,8 @@ function DanaSiap() {
     <Icon name="chevron-right" />
   </AnimatedPressable></Animated.View>;
 
-  const home = <>
+  // Screens are built only when shown: typing in a sheet must not rebuild all four tabs.
+  const renderHome = () => <>
     {header}
     {demo && (
       <AnimatedPressable
@@ -954,7 +960,7 @@ function DanaSiap() {
       {/* Safe to spend section */}
       <View style={{marginTop: 18}}>
         <Text style={[s.cardLabel, {fontSize: 9.5, letterSpacing: 1.2, color: '#97A588'}]}>AMAN DIPAKAI SEKARANG</Text>
-        <RollingValue value={currency(projection.safeToSpend)} bg={c.ink} containerStyle={{alignSelf: 'flex-start', marginTop: 3}} style={[s.cardBalance, {fontSize: 24, color: c.lime, marginTop: 0}]} />
+        <RollingValue value={currency(budget.safeNow)} bg={c.ink} containerStyle={{alignSelf: 'flex-start', marginTop: 3}} style={[s.cardBalance, {fontSize: 24, color: c.lime, marginTop: 0}]} />
       </View>
 
       {/* Right accent stripe */}
@@ -1083,7 +1089,7 @@ function DanaSiap() {
     />
   </>;
 
-  const needsScreen = <>
+  const renderNeeds = () => <>
     <View style={s.between}>
       <View>
         <Text style={s.mini}>SATU PER SATU, JADI SIAP</Text>
@@ -1103,8 +1109,8 @@ function DanaSiap() {
         <Icon name="layers" />
       </View>
       <View style={[s.stat, {backgroundColor: c.ink}]}>
-        <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? 'Target / hari kerja' : 'Uang bebas periode ini'}</Text>
-        <RollingValue value={currency(working ? projection.requiredDaily : Math.max(0, budget.freeMoney))} bg={c.ink} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {color: c.white}]} />
+        <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? 'Target / hari kerja' : 'Aman dipakai sekarang'}</Text>
+        <RollingValue value={currency(working ? projection.requiredDaily : budget.safeNow)} bg={c.ink} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {color: c.white}]} />
         <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? `${projection.workdays} hari kerja dalam periode` : 'Setelah semua kebutuhan wajib'}</Text>
       </View>
     </View>
@@ -1161,7 +1167,7 @@ function DanaSiap() {
   const leftoverDates = new Set((state.leftovers ?? []).map(l => l.date));
   const selectedDaily = (state.dailyItems ?? []).filter(item => isScheduled(item, selectedDay) && selectedDay >= item.since);
   const dailyDay = (state.dailyItems ?? []).length ? <><View style={s.divider} /><Text style={s.fieldLabel}>PENGELUARAN HARIAN</Text>{selectedDaily.length ? selectedDaily.map(item => dailyEntry(item, selectedDay)) : <Text style={s.muted}>Nggak ada pengeluaran harian terjadwal di tanggal ini.</Text>}<Button title="Libur panjang" secondary icon="sun" onPress={() => openSkip()} /></> : null;
-  const calendarScreen = <><View><Text style={s.mini}>{working ? 'RITME KERJA, RITME UANG' : 'JADWAL & KEBUTUHAN'}</Text><Text style={[s.title, {fontSize: 33}]}>{working ? 'Kalender kerja' : 'Kalender'}</Text></View><View style={s.section}><View style={s.between}><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan sebelumnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', -1))}><Icon name="chevron-left" /></AnimatedPressable><Text style={s.heading}>{monthStart.toLocaleDateString('id-ID', {month: 'long', year: 'numeric'})}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan berikutnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', monthDays))}><Icon name="chevron-right" /></AnimatedPressable></View><View style={s.calendarGrid}>{weekdays.map(day => <View key={day} style={[s.dayCell, {marginBottom: 4}]}><View style={[s.day, {height: 24}]}><Text style={s.mini}>{day}</Text></View></View>)}{Array.from({length: monthStart.getDay()}, (_, i) => <View key={`blank-${i}`} style={s.dayCell} />)}{monthDates.map(date => {const a = state.attendance.find(a => a.date === date), work = isWorkday(state, date), hol = getHoliday(date); return <View key={date} style={s.dayCell}><AnimatedPressable accessibilityRole="button" accessibilityLabel={`${shortDate(date)}, ${hol ? hol + ', ' : ''}${working ? a?.status ?? (work ? 'jadwal kerja' : 'libur') : ''}`} onPress={() => setSelectedDay(date)} style={[s.day, date === selectedDay ? {backgroundColor: c.ink} : date === today ? {backgroundColor: c.lime} : hol ? {backgroundColor: '#FDF0EE', borderWidth: 1, borderColor: '#F5C2BC'} : working && (!work || a?.status === 'holiday') ? {backgroundColor: '#F4F6F0'} : {}]}><Text style={[s.body, date === selectedDay && {color: c.lime}, hol && date !== selectedDay && {color: '#C93B2B', fontWeight: 'bold'}, working && !work && !hol && date !== selectedDay && {color: c.muted}]}>{Number(date.slice(-2))}</Text><View style={[s.row, {gap: 2}]}>{a && working ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: a.status === 'absent' ? '#D98B66' : c.lime}} /> : hol ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#E86555'}} /> : null}{leftoverDates.has(date) && <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#6F9A2E'}} />}</View></AnimatedPressable></View>;})}</View><Text style={s.mini}>{working ? '● Hijau: tercatat  ·  ● Merah: tgl merah  ·  ● Oranye: tidak masuk  ·  Abu: libur  ·  ● Hijau tua: ada uang sisa' : '● Merah: tanggal merah  ·  ● Hijau tua: ada uang sisa'}</Text></View>
+  const renderCalendar = () => <><View><Text style={s.mini}>{working ? 'RITME KERJA, RITME UANG' : 'JADWAL & KEBUTUHAN'}</Text><Text style={[s.title, {fontSize: 33}]}>{working ? 'Kalender kerja' : 'Kalender'}</Text></View><View style={s.section}><View style={s.between}><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan sebelumnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', -1))}><Icon name="chevron-left" /></AnimatedPressable><Text style={s.heading}>{monthStart.toLocaleDateString('id-ID', {month: 'long', year: 'numeric'})}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan berikutnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', monthDays))}><Icon name="chevron-right" /></AnimatedPressable></View><View style={s.calendarGrid}>{weekdays.map(day => <View key={day} style={[s.dayCell, {marginBottom: 4}]}><View style={[s.day, {height: 24}]}><Text style={s.mini}>{day}</Text></View></View>)}{Array.from({length: monthStart.getDay()}, (_, i) => <View key={`blank-${i}`} style={s.dayCell} />)}{monthDates.map(date => {const a = state.attendance.find(a => a.date === date), work = isWorkday(state, date), hol = getHoliday(date); return <View key={date} style={s.dayCell}><AnimatedPressable accessibilityRole="button" accessibilityLabel={`${shortDate(date)}, ${hol ? hol + ', ' : ''}${working ? a?.status ?? (work ? 'jadwal kerja' : 'libur') : ''}`} onPress={() => setSelectedDay(date)} style={[s.day, date === selectedDay ? {backgroundColor: c.ink} : date === today ? {backgroundColor: c.lime} : hol ? {backgroundColor: '#FDF0EE', borderWidth: 1, borderColor: '#F5C2BC'} : working && (!work || a?.status === 'holiday') ? {backgroundColor: '#F4F6F0'} : {}]}><Text style={[s.body, date === selectedDay && {color: c.lime}, hol && date !== selectedDay && {color: '#C93B2B', fontWeight: 'bold'}, working && !work && !hol && date !== selectedDay && {color: c.muted}]}>{Number(date.slice(-2))}</Text><View style={[s.row, {gap: 2}]}>{a && working ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: a.status === 'absent' ? '#D98B66' : c.lime}} /> : hol ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#E86555'}} /> : null}{leftoverDates.has(date) && <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#6F9A2E'}} />}</View></AnimatedPressable></View>;})}</View><Text style={s.mini}>{working ? '● Hijau: tercatat  ·  ● Merah: tgl merah  ·  ● Oranye: tidak masuk  ·  Abu: libur  ·  ● Hijau tua: ada uang sisa' : '● Merah: tanggal merah  ·  ● Hijau tua: ada uang sisa'}</Text></View>
     {!working ? <View style={s.section}><SectionHead title={shortDate(selectedDay)} />{selectedHoliday && <Text style={s.body}>Tanggal Merah: {selectedHoliday}</Text>}{activeNeeds.some(n => n.dueDate === selectedDay) ? activeNeeds.filter(n => n.dueDate === selectedDay).map(n => <NeedRow key={n.id} need={n} compact />) : <Text style={s.muted}>Tidak ada kebutuhan yang jatuh tempo di tanggal ini.</Text>}{dailyDay}</View> : <><View style={s.section}><SectionHead title={shortDate(selectedDay)} /><Text style={s.body}>{selectedAttendance?.planned ? 'Rencana kehadiran · belum dikonfirmasi' : selectedAttendance ? selectedAttendance.auto ? 'Masuk kerja · tercatat otomatis' : ({present: 'Sudah masuk kerja', absent: 'Tidak masuk', holiday: 'Libur terjadwal', half: 'Setengah hari'}[selectedAttendance.status]) : selectedHoliday ? `Tanggal Merah: ${selectedHoliday}` : selectedWorkday ? selectedDay > today ? 'Jadwal kerja · otomatis tercatat masuk di harinya' : 'Jadwal kerja · belum dicatat' : 'Hari libur · pemasukan diprediksi Rp0'}</Text><Text style={s.muted}>Pemasukan kerja: {currency(selectedAttendance?.income ?? (selectedWorkday ? state.profile.dailyIncome : 0))}</Text><Button title={selectedAttendance?.auto ? 'Tandai tidak masuk' : selectedAttendance?.planned ? 'Ubah rencana kehadiran' : selectedAttendance ? 'Ubah kehadiran' : 'Catat kehadiran'} onPress={() => open('attendance')} icon="check-circle" />{activeNeeds.filter(n => n.dueDate === selectedDay).map(n => <NeedRow key={n.id} need={n} compact />)}{dailyDay}</View>
     <Notice title="Kalau hari ini nggak masuk?" text={selectedDay < today ? 'Simulasi hanya untuk hari ini dan hari mendatang. Ubah catatan kehadiran untuk memperbaiki realisasi sebelumnya.' : !selectedWorkday ? 'Tanggal ini sudah dihitung sebagai libur. Tidak ada pemasukan kerja yang dikurangi.' : `Prediksi kekurangan menjadi ${currency(absence.shortfall)}${absence.shortfall > projection.shortfall ? `, bertambah ${currency(absence.shortfall - projection.shortfall)}` : ''}. Lihat dampak sebelum mencatat.`} icon="activity" />
     <Button title="Atur hari kerja & pemasukan" secondary onPress={() => open('setup')} icon="sliders" /></>}
@@ -1170,7 +1176,7 @@ function DanaSiap() {
   const incomeTotal = state.transactions.filter(t => t.type === 'income' && t.date <= today).reduce((sum, t) => sum + t.amount, 0);
   const bars = projection.days.filter((_, i) => i % Math.max(1, Math.floor(period / 7)) === 0).slice(0, 7);
   const maxBar = Math.max(1, ...bars.map(d => Math.abs(d.balance)));
-  const insightsScreen = <><View style={s.between}><AnimatedPressable onPress={() => switchTab('home')} accessibilityLabel="Kembali ke beranda" style={s.circle}><Icon name="arrow-left" /></AnimatedPressable><Text style={s.title}>Statistik</Text><AnimatedPressable onPress={() => open('settings')} accessibilityLabel="Pengaturan" style={s.circle}><Icon name="more-horizontal" /></AnimatedPressable></View><SegmentPills style={{justifyContent: 'space-between'}} options={[{key: 7, label: '7 hari'}, {key: 14, label: '14 hari'}, {key: 30, label: '30 hari'}, {key: 90, label: '90 hari'}]} value={period} onChange={setPeriod} /><View style={[s.row, {gap: 12}]}><View style={s.stat}><View style={s.between}><Text style={s.mini}>↗ Pemasukan aktual</Text><Icon name="more-horizontal" size={17} /></View><RollingValue value={currency(incomeTotal)} bg={c.lime} containerStyle={{alignSelf: 'flex-start'}} style={s.number} /><Text style={s.mini}>Total yang sudah dicatat</Text><View style={[s.progress, {marginTop: 13, backgroundColor: '#DBF2A0'}]}><View style={[s.progressFill, {width: `${incomeTotal ? Math.max(0, Math.min(100, (incomeTotal - expenseTotal) / incomeTotal * 100)) : 0}%`, backgroundColor: c.white}]} /></View></View><View style={[s.stat, {backgroundColor: c.ink}]}><View style={s.between}><Text style={[s.mini, {color: '#D0DBC2'}]}>↗ Pengeluaran aktual</Text><Icon name="more-horizontal" size={17} color={c.lime} /></View><RollingValue value={currency(expenseTotal)} bg={c.ink} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {color: c.white}]} /><Svg width="100%" height="58" viewBox="0 0 150 58"><Path d="M10 45 L38 15 L65 37 L98 8 L137 40 L10 45 M38 15 L98 8 L65 37 L137 40 M10 45 L98 8" fill="none" stroke={c.lime} strokeWidth=".8" /></Svg></View></View><View style={s.section}><PanelNotch /><SectionHead title="Arah saldo kamu" /><View style={s.between}><View><Text style={s.mini}>Prediksi saldo akhir</Text><RollingValue value={currency(projection.projectedBalance)} bg={c.white} containerStyle={{alignSelf: 'flex-start'}} style={s.number} /></View><View style={{gap: 5}}><Text style={s.mini}>■ Hijau: tersedia</Text><Text style={s.mini}>■ Gelap: defisit</Text></View></View><View style={{height: 171, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', borderBottomWidth: 1, borderColor: c.line}}>{bars.map(d => <View key={d.date} style={{alignItems: 'center', width: '12%', justifyContent: 'flex-end', height: '100%'}}><View style={{height: Math.max(8, Math.abs(d.balance) / maxBar * 126), width: 21, backgroundColor: d.balance < 0 ? c.ink : c.lime, borderRadius: 3, overflow: 'hidden'}}>{Array.from({length: 8}, (_, i) => <View key={i} style={{position: 'absolute', height: 3, backgroundColor: c.white, width: '100%', bottom: i * 18}} />)}</View><Text style={[s.mini, {fontSize: 9, marginTop: 10, marginBottom: 8}]}>{shortDate(d.date)}</Text></View>)}</View><Text style={s.muted}>Perkiraan {period} hari, mengikuti {working ? 'jadwal kerja, ' : ''}kebutuhan, dan anggaran harianmu. Bukan pemasukan yang sudah diterima.</Text></View>
+  const renderInsights = () => <><View style={s.between}><AnimatedPressable onPress={() => switchTab('home')} accessibilityLabel="Kembali ke beranda" style={s.circle}><Icon name="arrow-left" /></AnimatedPressable><Text style={s.title}>Statistik</Text><AnimatedPressable onPress={() => open('settings')} accessibilityLabel="Pengaturan" style={s.circle}><Icon name="more-horizontal" /></AnimatedPressable></View><SegmentPills style={{justifyContent: 'space-between'}} options={[{key: 7, label: '7 hari'}, {key: 14, label: '14 hari'}, {key: 30, label: '30 hari'}, {key: 90, label: '90 hari'}]} value={period} onChange={setPeriod} /><View style={[s.row, {gap: 12}]}><View style={s.stat}><View style={s.between}><Text style={s.mini}>↗ Pemasukan aktual</Text><Icon name="more-horizontal" size={17} /></View><RollingValue value={currency(incomeTotal)} bg={c.lime} containerStyle={{alignSelf: 'flex-start'}} style={s.number} /><Text style={s.mini}>Total yang sudah dicatat</Text><View style={[s.progress, {marginTop: 13, backgroundColor: '#DBF2A0'}]}><View style={[s.progressFill, {width: `${incomeTotal ? Math.max(0, Math.min(100, (incomeTotal - expenseTotal) / incomeTotal * 100)) : 0}%`, backgroundColor: c.white}]} /></View></View><View style={[s.stat, {backgroundColor: c.ink}]}><View style={s.between}><Text style={[s.mini, {color: '#D0DBC2'}]}>↗ Pengeluaran aktual</Text><Icon name="more-horizontal" size={17} color={c.lime} /></View><RollingValue value={currency(expenseTotal)} bg={c.ink} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {color: c.white}]} /><Svg width="100%" height="58" viewBox="0 0 150 58"><Path d="M10 45 L38 15 L65 37 L98 8 L137 40 L10 45 M38 15 L98 8 L65 37 L137 40 M10 45 L98 8" fill="none" stroke={c.lime} strokeWidth=".8" /></Svg></View></View><View style={s.section}><PanelNotch /><SectionHead title="Arah saldo kamu" /><View style={s.between}><View><Text style={s.mini}>Prediksi saldo akhir</Text><RollingValue value={currency(projection.projectedBalance)} bg={c.white} containerStyle={{alignSelf: 'flex-start'}} style={s.number} /></View><View style={{gap: 5}}><Text style={s.mini}>■ Hijau: tersedia</Text><Text style={s.mini}>■ Gelap: defisit</Text></View></View><View style={{height: 171, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', borderBottomWidth: 1, borderColor: c.line}}>{bars.map(d => <View key={d.date} style={{alignItems: 'center', width: '12%', justifyContent: 'flex-end', height: '100%'}}><View style={{height: Math.max(8, Math.abs(d.balance) / maxBar * 126), width: 21, backgroundColor: d.balance < 0 ? c.ink : c.lime, borderRadius: 3, overflow: 'hidden'}}>{Array.from({length: 8}, (_, i) => <View key={i} style={{position: 'absolute', height: 3, backgroundColor: c.white, width: '100%', bottom: i * 18}} />)}</View><Text style={[s.mini, {fontSize: 9, marginTop: 10, marginBottom: 8}]}>{shortDate(d.date)}</Text></View>)}</View><Text style={s.muted}>Perkiraan {period} hari, mengikuti {working ? 'jadwal kerja, ' : ''}kebutuhan, dan anggaran harianmu. Bukan pemasukan yang sudah diterima.</Text></View>
     {projection.risks.map((r, i) => <Notice key={`${r.needId}-${i}`} title={`${r.title} · ${shortDate(r.date)}`} text={`Diprediksi kurang ${currency(r.shortfall)}. ${working ? 'Tinjau pengeluaran dan hari kerja yang tersisa.' : 'Tinjau pengeluaran atau catat uang masuk.'}`} icon="alert-circle" />)}
     <View style={s.section}><SectionHead title="Semua transaksi" />{transactions.length ? transactions.map(t => <View key={t.id} style={[s.between, {paddingVertical: 7, gap: 15}]}><View style={{flex: 1}}><Text style={s.listTitle}>{t.title}</Text><Text style={s.mini}>{shortDate(t.date)} · {t.category}</Text></View><Text style={s.amount}>{t.type === 'income' ? '+' : '−'}{currency(t.amount)}</Text></View>) : <Empty text="Belum ada transaksi yang dicatat." />}</View>
   </>;
@@ -1180,7 +1186,7 @@ function DanaSiap() {
   const modalToastBottom = keyboardHeight > 0 ? keyboardHeight + 12 : navBottom + 8;
   const closeToast = () => setToast(null);
 
-  return <View style={s.screen}>{started ?<SafeAreaView style={s.fill} edges={['top', 'left', 'right']}><Veiled veil={screenVeil} bg={c.pale} provide style={s.fill} targetStyle={s.fill}><Grid /><ScrollView contentContainerStyle={[s.content, {paddingBottom: 110 + insets.bottom}]} showsVerticalScrollIndicator={false}>{storageError && <Notice title="Periksa penyimpanan" text={storageError} icon="alert-circle" />}<CrossBlur k={tab} style={{gap: 16}}><View style={{gap: 16}}>{tab === 'home' ? home : tab === 'needs' ? needsScreen : tab === 'calendar' ? calendarScreen : insightsScreen}</View></CrossBlur></ScrollView></Veiled><MorphNav tab={tab} bottom={navBottom} homeRef={homeNavRef} onTab={switchTab} onAction={action => setTimeout(() => open(action), 120)} /></SafeAreaView> : welcome}
+  return <View style={s.screen}>{started ?<SafeAreaView style={s.fill} edges={['top', 'left', 'right']}><Veiled veil={screenVeil} bg={c.pale} provide style={s.fill} targetStyle={s.fill}><Grid /><ScrollView contentContainerStyle={[s.content, {paddingBottom: 110 + insets.bottom}]} showsVerticalScrollIndicator={false}>{storageError && <Notice title="Periksa penyimpanan" text={storageError} icon="alert-circle" />}<CrossBlur k={tab} style={{gap: 16}}><View style={{gap: 16}}>{tab === 'home' ? renderHome() : tab === 'needs' ? renderNeeds() : tab === 'calendar' ? renderCalendar() : renderInsights()}</View></CrossBlur></ScrollView></Veiled><MorphNav tab={tab} bottom={navBottom} homeRef={homeNavRef} onTab={switchTab} onAction={action => setTimeout(() => open(action), 120)} /></SafeAreaView> : welcome}
     <FlyLayer />
     <DialogHost />
     <Toast toast={toastHost === 'main' ? toast : null} bottom={started ? navBottom + 60 + 12 : navBottom + 12} onClose={closeToast} />
@@ -1197,10 +1203,10 @@ function DanaSiap() {
         <Collapse visible={sheet === 'expense'}>{(() => {const plan = leftoverPlan(number(form.amount || '0')); return <>
           {plan.available && <View style={[s.row, {marginTop: 15, flexWrap: 'wrap'}]}><Chip label={`${plan.on ? '✓ ' : ''}Ambil dari Uang Sisa (${currency(Math.max(0, budget.leftoverPot))})`} active={plan.on} onPress={() => setUseLeftover(!plan.on)} /></View>}
           {plan.on && plan.from > 0 && <Text style={[s.muted, {marginTop: 6}]}>{currency(plan.from)} diambil dari Uang Sisa, sisanya dari jatah.</Text>}
-          {plan.hint ? <Text style={[s.muted, {marginTop: 6}, plan.hint.startsWith('Uang wajib') && {color: c.red}]}>{plan.hint}</Text> : null}
+          {plan.hint ? <Text style={[s.muted, {marginTop: 6}, (plan.hint.startsWith('Uang wajib') || plan.hint.startsWith('Uangnya belum')) && {color: c.red}]}>{plan.hint}</Text> : null}
         </>;})()}</Collapse>
-        <Collapse visible={sheet === 'income' && budget.daysLeft <= 3}><View style={[s.row, {marginTop: 15, flexWrap: 'wrap'}]}><Chip label={`${forNextPeriod ? '✓ ' : ''}Untuk periode baru (mulai ${shortDate(addDays(budget.end, 1))})`} active={forNextPeriod} onPress={() => setForNextPeriod(!forNextPeriod)} /></View></Collapse>
-        {sheet === 'income' && forNextPeriod && budget.daysLeft <= 3 && <Text style={[s.muted, {marginTop: 6}]}>Uangnya disimpan dulu dan baru dihitung ke jatah jajan mulai {shortDate(addDays(budget.end, 1))}.</Text>}
+        <Collapse visible={sheet === 'income' && budget.daysLeft <= 3}><View style={[s.row, {marginTop: 15, flexWrap: 'wrap'}]}><Chip label={`${(forNextPeriod ?? true) ? '✓ ' : ''}Untuk periode baru (mulai ${shortDate(addDays(budget.end, 1))})`} active={forNextPeriod ?? true} onPress={() => setForNextPeriod(!(forNextPeriod ?? true))} /></View></Collapse>
+        {sheet === 'income' && (forNextPeriod ?? true) && budget.daysLeft <= 3 && <Text style={[s.muted, {marginTop: 6}]}>Uangnya disimpan dulu dan baru dihitung ke jatah jajan mulai {shortDate(addDays(budget.end, 1))}.</Text>}
         {formError && <Text style={s.error}>{formError}</Text>}<View style={{marginTop: 23}}><Button title={sheet === 'need' ? 'Simpan rencana' : 'Simpan transaksi'} onPress={saveForm} icon="check" /></View>
       </>}
       {sheet === 'setup' && <><Text style={s.muted}>{profile.working ? 'DanaSiap menghitung tabungan hanya di hari kamu kerja. Semua nominal dalam rupiah.' : 'Catat uang masuk dan keluar, DanaSiap bantu jaga kebutuhanmu. Semua nominal dalam rupiah.'}</Text>
@@ -1213,7 +1219,7 @@ function DanaSiap() {
             {Boolean(profile.avatarUrl) && <View style={{flex: 1}}><Button title="Hapus foto" secondary icon="trash-2" onPress={removeAvatar} /></View>}
           </View>
         </View>
-        <Field label="NAMA PANGGILAN" value={profile.name} onChange={name => setProfile({...profile, name})} placeholder="Nama kamu" /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>APAKAH KAMU BEKERJA?</Text><SegmentPills style={{gap: 8}} options={[{key: 'yes', label: 'Bekerja'}, {key: 'no', label: 'Tidak bekerja'}] as const} value={profile.working ? 'yes' : 'no'} onChange={v => setProfile({...profile, working: v === 'yes'})} /><Collapse visible={Boolean(!profile.working)}>{<Text style={[s.muted, {marginTop: 6}]}>Absensi, gajian, dan hari kerja disembunyikan. Pemasukan dicatat lewat Uang masuk.</Text>}</Collapse><Field label="SALDO AWAL (RP)" value={profile.openingBalance} onChange={openingBalance => setProfile({...profile, openingBalance})} placeholder="Saldo sebelum transaksi yang dicatat" numeric /><Collapse visible={Boolean(profile.working)}>{<><Field label={profile.payrollCycle === 'monthly' ? "UPAH POKOK / HARI KERJA (RP)" : "PEMASUKAN PER HARI KERJA (RP)"} value={profile.dailyIncome} onChange={dailyIncome => setProfile({...profile, dailyIncome})} placeholder="70000" numeric /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>SISTEM PENERIMAAN GAJI</Text><SegmentPills style={{gap: 8}} options={[{key: 'daily', label: 'Harian'}, {key: 'monthly', label: 'Bulanan (Payroll)'}] as const} value={profile.payrollCycle} onChange={payrollCycle => setProfile({...profile, payrollCycle})} /><Collapse visible={Boolean(profile.payrollCycle === 'monthly')}>{<Field label="TANGGAL GAJIAN BULANAN (1-28)" value={profile.payday} onChange={payday => setProfile({...profile, payday})} placeholder="5" numeric />}</Collapse><Field label="TUNJANGAN AKTIVITAS (UANG SAKU CASH / HARI AKTIF)" value={profile.activityAllowance} onChange={activityAllowance => setProfile({...profile, activityAllowance})} placeholder="0" numeric /><Text style={[s.muted, {marginTop: 4}]}>Diberikan cash langsung di tangan pada hari aktif. Libur = Rp 0.</Text></>}</Collapse><Field label="SEBULAN MULAI TANGGAL (1-28)" value={profile.periodStartDay} onChange={periodStartDay => setProfile({...profile, periodStartDay})} placeholder="1" numeric /><Text style={[s.muted, {marginTop: 6}]}>Misal uang bulanan masuk tanggal 25, isi 26: jatah jajan dihitung 26 sampai 25 bulan berikutnya.</Text>
+        <Field label="NAMA PANGGILAN" value={profile.name} onChange={name => setProfile({...profile, name})} placeholder="Nama kamu" /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>APAKAH KAMU BEKERJA?</Text><SegmentPills style={{gap: 8}} options={[{key: 'yes', label: 'Bekerja'}, {key: 'no', label: 'Tidak bekerja'}] as const} value={profile.working ? 'yes' : 'no'} onChange={v => setProfile({...profile, working: v === 'yes'})} /><Collapse visible={Boolean(!profile.working)}>{<Text style={[s.muted, {marginTop: 6}]}>Absensi, gajian, dan hari kerja disembunyikan. Pemasukan dicatat lewat Uang masuk.</Text>}</Collapse><Field label="SALDO AWAL (RP)" value={profile.openingBalance} onChange={openingBalance => setProfile({...profile, openingBalance})} placeholder="Saldo sebelum transaksi yang dicatat" numeric /><Collapse visible={Boolean(profile.working)}>{<><Field label={profile.payrollCycle === 'monthly' ? "UPAH POKOK / HARI KERJA (RP)" : "PEMASUKAN PER HARI KERJA (RP)"} value={profile.dailyIncome} onChange={dailyIncome => setProfile({...profile, dailyIncome})} placeholder="70000" numeric /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>SISTEM PENERIMAAN GAJI</Text><SegmentPills style={{gap: 8}} options={[{key: 'daily', label: 'Harian'}, {key: 'monthly', label: 'Bulanan (Payroll)'}] as const} value={profile.payrollCycle} onChange={payrollCycle => setProfile({...profile, payrollCycle})} /><Collapse visible={Boolean(profile.payrollCycle === 'monthly')}>{<Field label="TANGGAL GAJIAN BULANAN (1-28)" value={profile.payday} onChange={payday => setProfile({...profile, payday})} placeholder="5" numeric />}</Collapse><Field label="TUNJANGAN AKTIVITAS (UANG SAKU CASH / HARI AKTIF)" value={profile.activityAllowance} onChange={activityAllowance => setProfile({...profile, activityAllowance})} placeholder="0" numeric /><Text style={[s.muted, {marginTop: 4}]}>Diberikan cash langsung di tangan pada hari aktif. Libur = Rp 0.</Text></>}</Collapse><Field label="SEBULAN MULAI TANGGAL (1-28)" value={profile.periodStartDay} onChange={periodStartDay => setProfile({...profile, periodStartDay})} placeholder="1" numeric /><Text style={[s.muted, {marginTop: 6}]}>Isi tanggal uang bulananmu biasanya masuk (gajian atau transferan). Misal masuk tanggal 25, isi 25: jatah dihitung dari tanggal 25 sampai 24 bulan berikutnya.</Text>{profile.working && profile.payrollCycle === 'monthly' && Number(profile.periodStartDay || '1') !== Number(profile.payday || '5') && <Text style={[s.muted, {marginTop: 4, color: c.red}]}>Tanggal gajianmu {profile.payday || '5'}. Samakan supaya gaji langsung dihitung untuk bulan itu.</Text>}
         <Text style={[s.fieldLabel, {marginTop: 19, marginBottom: 4}]}>PENGELUARAN HARIAN</Text><Text style={s.muted}>Tercatat otomatis tiap hari terjadwal. Tandai kalau nggak dipakai. Contoh: ongkos anak, uang masak. Kebutuhan berkala (ganti oli, kuota, dll.) dicatat di Rencana Kebutuhan.</Text>
         {dailyDraft.map((item, index) => <View key={item.id} style={[s.section, {marginTop: 12, gap: 0, padding: 14}]}>
           <View style={s.between}><Text style={s.listTitle}>{item.title.trim() || `Pengeluaran ${index + 1}`}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel={`Hapus ${item.title.trim() || 'pengeluaran harian'}`} onPress={() => setDailyDraft(list => list.filter(d => d.id !== item.id))} style={s.tinyButton}><Text style={s.actionLabel}>Hapus</Text></AnimatedPressable></View>
@@ -1257,7 +1263,7 @@ function DanaSiap() {
         const notice = !result ? null : result.verdict === 'jatah' ? {title: 'Aman', text: 'Aman, masih masuk jatah hari ini.', icon: 'check-circle' as IconName}
           : result.verdict === 'sisa' ? {title: 'Aman pakai Uang Sisa', text: `Aman: ${result.fromAllowance > 0 ? `${currency(result.fromAllowance)} dari jatah hari ini + ` : ''}${currency(result.fromLeftover)} dari Uang Sisa (Uang Sisa tinggal ${currency(result.leftoverAfter)}).`, icon: 'archive' as IconName}
           : result.verdict === 'turun' ? {title: 'Bisa, tapi hati-hati', text: `Bisa, tapi jatah jajan turun jadi ${currency(result.perDayAfter)}/hari sampai ${shortDate(budget.end)}.`, icon: 'trending-down' as IconName}
-          : {title: 'Jangan dulu', text: `Jangan dulu, uang wajib jadi kurang ${currency(result.shortfall)}.`, icon: 'alert-octagon' as IconName};
+          : {title: 'Jangan dulu', text: result.cashShort > 0 ? `Jangan dulu, uangnya belum ada. Yang bisa dipakai sekarang ${currency(result.cashNow)}.` : `Jangan dulu, uang wajib jadi kurang ${currency(result.shortfall)}.`, icon: 'alert-octagon' as IconName};
         return <>
           <Text style={s.muted}>Jatah jajan hari ini {currency(Math.max(0, budget.leftToday))}{budget.leftoverPot > 0 ? ` · Uang Sisa ${currency(budget.leftoverPot)}` : ''}.</Text>
           <Field label="HARGA BARANG (RP)" value={checkAmount} onChange={setCheckAmount} placeholder="50.000" numeric />

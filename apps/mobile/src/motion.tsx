@@ -16,7 +16,7 @@
  * together with the content's opacity/scale.
  */
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { AccessibilityInfo, Animated, Easing, GestureResponderEvent, LayoutAnimation, LayoutChangeEvent, Modal, Platform, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { AccessibilityInfo, Animated, Easing, GestureResponderEvent, LayoutChangeEvent, Modal, Platform, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import { BlurTargetView, BlurView } from 'expo-blur';
 import type { BlurTint } from 'expo-blur';
 import { colors as c, styles as s } from './theme';
@@ -57,12 +57,6 @@ export function exit(value: Animated.Value, toValue: number, duration: number = 
 /** Reduced-motion replacement: opacity only, 150 ms. */
 export function fade(value: Animated.Value, toValue: number, delay = 0, native = true) {
   return Animated.timing(value, {toValue, duration: T.reduced, delay, easing: Easing.linear, useNativeDriver: native});
-}
-/** Smoothly morphs container sizes on the next layout pass (siblings slide, never jump). */
-export function layoutSpring() {
-  if (reduced) return;
-  // Damping ratio of the spec spring: 30 / (2 * sqrt(380 * 1)) ≈ 0.77.
-  LayoutAnimation.configureNext({duration: 450, update: {type: LayoutAnimation.Types.spring, springDamping: 0.77}});
 }
 
 export type Rect = {x: number; y: number; width: number; height: number};
@@ -167,11 +161,7 @@ export function PressScale({onPress, children, style, disabled, accessibilityRol
   return (
     <AnimatedPressableBase
       ref={viewRef as any}
-      onPress={onPress && (event => {
-        // Whatever this tap changes in the layout, neighbours slide into place instead of jumping.
-        layoutSpring();
-        onPress(event);
-      })}
+      onPress={onPress}
       onPressIn={pressIn}
       onPressOut={pressOut}
       onLayout={onLayout}
@@ -347,7 +337,7 @@ export function StaggerList({visible = true, origin = 'top', children, style, bg
       if (bg && !frozen) veil.enter(T.stagger * 2);
     } else if (mounted) {
       if (bg) veil.leave();
-      const timer = setTimeout(() => {layoutSpring(); setMounted(false);}, reduced ? T.reduced : T.close);
+      const timer = setTimeout(() => setMounted(false), reduced ? T.reduced : T.close);
       return () => clearTimeout(timer);
     }
   }, [visible]);
@@ -361,44 +351,80 @@ export function StaggerList({visible = true, origin = 'top', children, style, bg
 // ─── Expanding sections push their neighbours smoothly ─────────────────────
 /** Neighbours slide back up a little slower than the content blurs out, so nothing snaps. */
 const COLLAPSE_CLOSE_MS = 240;
+/** Longest the open spring may take before the content is simply shown at full height. */
+const COLLAPSE_OPEN_MAX_MS = 1200;
 /**
  * Mounts/unmounts its content while its HEIGHT springs open and eases shut, so everything below
  * moves with it. Explicit on purpose: LayoutAnimation is not reliable on Android's new architecture.
+ * Watchdogs guarantee the final state (fully shown / fully gone) even if an animation never finishes.
  */
 export function Collapse({visible, children, style}: {visible: boolean; children: React.ReactNode; style?: StyleProp<ViewStyle>}) {
   const [mounted, setMounted] = useState(visible);
   const [animating, setAnimating] = useState(false);
   const height = useRef(new Animated.Value(0)).current;
   const natural = useRef(0);
+  const target = useRef(0);
   const waiting = useRef(false);
+  const token = useRef(0);
+  const watchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
   const last = useRef(children);
   if (visible) last.current = children;
   const first = useRef(true);
-  const open = (to: number) => {
+  const guard = (ms: number, done: () => void) => {
+    if (watchdog.current) clearTimeout(watchdog.current);
+    watchdog.current = setTimeout(() => {watchdog.current = null; done();}, ms);
+  };
+  const settle = (id: number, show: boolean) => {
+    if (id !== token.current) return;
+    if (watchdog.current) {clearTimeout(watchdog.current); watchdog.current = null;}
+    height.stopAnimation();
     waiting.current = false;
-    spring(height, to, {native: false}).start(({finished}) => {if (finished) setAnimating(false);});
+    if (!show) setMounted(false);
+    setAnimating(false);
+  };
+  const open = (to: number, id: number) => {
+    waiting.current = false;
+    target.current = to;
+    // Pixel heights settle at half a pixel; the 0.001 rest threshold for 0–1 values would keep
+    // the spring crawling invisibly for most of a second.
+    Animated.spring(height, {toValue: to, ...SPRING, useNativeDriver: false, restDisplacementThreshold: 0.5, restSpeedThreshold: 0.5}).start(({finished}) => {
+      if (finished) settle(id, true);
+    });
   };
   useEffect(() => {
     if (first.current) {first.current = false; return;}
+    const id = ++token.current;
     height.stopAnimation();
     if (visible) {
       if (reduced) {setMounted(true); setAnimating(false); return;}
       setAnimating(true);
-      if (mounted && natural.current > 0) open(natural.current); // re-opened while closing
+      if (mounted && natural.current > 0) open(natural.current, id); // re-opened while closing
       else {height.setValue(0); waiting.current = true; setMounted(true);}
-    } else if (mounted) {
-      if (reduced) {setMounted(false); return;}
-      height.setValue(natural.current);
-      setAnimating(true);
-      Animated.timing(height, {toValue: 0, duration: COLLAPSE_CLOSE_MS, easing: Easing.bezier(0.4, 0, 0.2, 1), useNativeDriver: false})
-        .start(({finished}) => {if (finished) {setMounted(false); setAnimating(false);}});
+      // Safety net: the content always ends fully shown, even if the animation never runs.
+      guard(COLLAPSE_OPEN_MAX_MS, () => settle(id, true));
+      return;
     }
+    if (!mounted) return;
+    if (reduced) {setMounted(false); return;}
+    height.setValue(natural.current);
+    setAnimating(true);
+    Animated.timing(height, {toValue: 0, duration: COLLAPSE_CLOSE_MS, easing: Easing.bezier(0.4, 0, 0.2, 1), useNativeDriver: false})
+      .start(({finished}) => {if (finished) settle(id, false);});
+    guard(COLLAPSE_CLOSE_MS + 200, () => settle(id, false));
   }, [visible]);
+  useEffect(() => () => {if (watchdog.current) clearTimeout(watchdog.current);}, []);
   if (!mounted) return null;
+  // While animating, the content is laid out absolutely: a 0-height parent would otherwise squeeze it
+  // to 0 on Android's new architecture, and its real height could never be measured.
   return <Animated.View style={[style, animating && {height, overflow: 'hidden'}]}>
-    <View onLayout={e => {
-      natural.current = e.nativeEvent.layout.height;
-      if (waiting.current && natural.current > 0) open(natural.current);
+    <View style={animating ? {position: 'absolute', top: 0, left: 0, right: 0} : undefined} onLayout={e => {
+      const measured = e.nativeEvent.layout.height;
+      natural.current = measured;
+      if (!animating) return;
+      // Empty content has nothing to reveal: finish right away instead of waiting for a height.
+      if (measured <= 0) {if (waiting.current) settle(token.current, true); return;}
+      // Start once the height is known; follow it if the content changes size mid-animation.
+      if (waiting.current || (visible && Math.abs(measured - target.current) > 1)) open(measured, token.current);
     }}>{visible ? children : last.current}</View>
   </Animated.View>;
 }
@@ -447,7 +473,7 @@ export function SegmentPills<K extends string | number>({options, value, onChang
     <Animated.View pointerEvents="none" style={{position: 'absolute', left, top, width, height, opacity: shown, borderRadius: 22, backgroundColor: c.lime}} />
     {options.map((o, i) => {
       const active = o.key === value;
-      const pill = <PressScale accessibilityLabel={o.label} accessibilityState={{selected: active}} onPress={() => {layoutSpring(); onChange(o.key);}} style={[s.tab, {backgroundColor: 'transparent'}]}>
+      const pill = <PressScale accessibilityLabel={o.label} accessibilityState={{selected: active}} onPress={() => {onChange(o.key);}} style={[s.tab, {backgroundColor: 'transparent'}]}>
         <Text style={[s.actionLabel, active && {color: c.ink, fontWeight: 'bold'}]}>{o.label}</Text>
       </PressScale>;
       return <View key={String(o.key)} onLayout={setBox(o.key)}>{stagger ? <StaggerItem order={i} from="top">{pill}</StaggerItem> : pill}</View>;

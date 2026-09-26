@@ -36,6 +36,7 @@ import {
   type FinancialAction,
   type Need,
   type Attendance,
+  spendingImpact,
 } from "@danasiap/core";
 import { Brand, Money, DateLabel, MoneyInput, CustomSelect, processAvatarFile } from "./components";
 import { alertDialog } from "./dialog";
@@ -410,8 +411,15 @@ export function ProfileFields({
         />
         <small>
           Jatah jajan dihitung per periode ini. Pilih tanggal uang bulananmu
-          biasanya masuk.
+          biasanya masuk (gajian atau transferan).
         </small>
+        {working && profile.payrollCycle === "monthly" &&
+          (profile.periodStartDay ?? 1) !== (profile.payday ?? 5) && (
+            <small className="form-warning">
+              Tanggal gajianmu {profile.payday ?? 5}. Samakan supaya gaji
+              langsung dihitung untuk bulan itu.
+            </small>
+          )}
       </label>
       {items && setItems && (
         <DailyItemsEditor items={items} setItems={setItems} />
@@ -576,7 +584,8 @@ export function TransactionForm({
   const [usePot, setUsePot] = useState<boolean | null>(
     initialFromLeftover ? true : null,
   );
-  const [nextPeriod, setNextPeriod] = useState(false);
+  // Money recorded in the last days of a period is usually next month's money.
+  const [nextPeriod, setNextPeriod] = useState(() => periodBudget(state).daysLeft <= 3);
   const [error, setError] = useState("");
   const budget = periodBudget(state);
   const pot = Math.max(0, budget.leftoverPot);
@@ -589,9 +598,9 @@ export function TransactionForm({
       ? suggested
       : Math.min(pot, amount);
   const ownMoney = amount - fromLeftover;
-  const freeAfter = budget.freeMoney - ownMoney;
-  const perDayAfter =
-    budget.daysLeft > 1 ? Math.max(0, Math.floor(freeAfter / (budget.daysLeft - 1))) : 0;
+  // Same timing-aware check as "Cek sebelum beli": later income cannot pay for today.
+  const impact = spendingImpact(budget, amount, fromLeftover);
+  const perDayAfter = impact.perDayAfter;
   const newPeriodStart = addDays(budget.end, 1);
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -720,10 +729,15 @@ export function TransactionForm({
         </div>
       )}</Collapse>
       <Collapse when={Boolean(kind === "expense" && amount > 0 && ownMoney > Math.max(0, budget.leftToday))}>{() => (
-        <p className={`budget-hint ${freeAfter < 0 ? "bahaya" : "turun"}`}>
-          {freeAfter < 0 ? (
+        <p className={`budget-hint ${impact.shortfall > 0 || impact.cashShort > 0 ? "bahaya" : "turun"}`}>
+          {impact.cashShort > 0 ? (
             <>
-              Uang wajib jadi kurang <Money amount={-freeAfter} />.
+              Uangnya belum ada. Yang bisa dipakai sekarang{" "}
+              <Money amount={Math.max(0, budget.money - Math.max(0, budget.leftoverPot))} />.
+            </>
+          ) : impact.shortfall > 0 ? (
+            <>
+              Uang wajib jadi kurang <Money amount={impact.shortfall} />.
             </>
           ) : budget.daysLeft > 1 ? (
             <>

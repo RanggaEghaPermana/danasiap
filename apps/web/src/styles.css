@@ -4691,3 +4691,17 @@ span.m-layer {
 .button.danger-solid:hover {
   background: #97462f;
 }
+
+.budget-note {
+  margin: -4px 0 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f1f6e7;
+  color: #55604a;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.form-warning {
+  color: #ad543b;
+}

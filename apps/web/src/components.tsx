@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useId, type ReactNode } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import {
   X,
   ArrowUpRight,
@@ -15,6 +15,16 @@ import {
   Search,
 } from "lucide-react";
 import { currency, formatThousands, parseThousands, type Need, type Transaction } from "@danasiap/core";
+import {
+  AnimatedValue,
+  Presence,
+  SPRING,
+  SPRING_MS,
+  REDUCED_MS,
+  reducedMotion,
+  triggerPoint,
+  useAutoMorph,
+} from "./motion";
 
 export function Brand({ small = false }: { small?: boolean }) {
   return (
@@ -26,15 +36,24 @@ export function Brand({ small = false }: { small?: boolean }) {
     </span>
   );
 }
+/** A rupiah amount. Changes animate (old value blurs up and out, new one blurs in). */
 export function Money({
   amount,
   className = "",
+  hold,
+  flyTarget,
 }: {
   amount: number;
   className?: string;
+  /** Wait for a flyTo() chip aimed at this key before showing a new value. */
+  hold?: string;
+  /** Marks this amount as a landing spot for flyTo(). */
+  flyTarget?: string;
 }) {
   return (
-    <span className={`money ${className}`}>{currency(Math.round(amount))}</span>
+    <span className={`money ${className}`} data-fly-target={flyTarget}>
+      <AnimatedValue value={currency(Math.round(amount))} hold={hold} />
+    </span>
   );
 }
 export function DateLabel({
@@ -54,53 +73,102 @@ export function DateLabel({
     </>
   );
 }
+/** The dialog surface. It grows from the control that opened it and springs to new heights. */
 export function Modal({
-  title,
-  subtitle,
   children,
   close,
+  exiting = false,
+  labelledBy,
+  className = "",
 }: {
-  title: string;
-  subtitle?: string;
   children: ReactNode;
   close: () => void;
+  exiting?: boolean;
+  labelledBy?: string;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const headingId = useId();
-  useEffect(() => {
+  useAutoMorph(ref, "height");
+  useLayoutEffect(() => {
     const node = ref.current;
-    node?.showModal();
-    return () => node?.close();
+    if (!node) return;
+    node.showModal();
+    // Pattern 9: appear with blur + scale, growing from the trigger.
+    const reduced = reducedMotion();
+    const rect = node.getBoundingClientRect();
+    const point = triggerPoint();
+    let shift = "0px 10px";
+    if (point && !reduced) {
+      const ox = Math.min(Math.max(point.x - rect.left, 0), rect.width);
+      const oy = Math.min(Math.max(point.y - rect.top, 0), rect.height);
+      node.style.transformOrigin = `${ox}px ${oy}px`;
+      const clamp = (v: number) => Math.max(-40, Math.min(40, v));
+      shift = `${clamp((point.x - rect.left - rect.width / 2) * 0.12)}px ${clamp((point.y - rect.top - rect.height / 2) * 0.12)}px`;
+    }
+    const appear = node.animate(
+      reduced
+        ? [{ opacity: 0 }, { opacity: 1 }]
+        : [
+            { opacity: 0, filter: "blur(8px)", scale: 0.96, translate: shift },
+            { opacity: 1, filter: "blur(0px)", scale: 1, translate: "0px 0px" },
+          ],
+      {
+        duration: reduced ? REDUCED_MS : SPRING_MS,
+        easing: reduced ? "linear" : SPRING,
+      },
+    );
+    return () => {
+      appear.cancel();
+      node.close();
+    };
   }, []);
   return (
     <dialog
       ref={ref}
-      className="modal"
-      aria-labelledby={headingId}
-      onCancel={close}
+      className={`modal ${className} ${exiting ? "is-exiting" : ""}`}
+      aria-labelledby={labelledBy}
+      onCancel={(event) => {
+        // Close through React so the dialog can animate out.
+        event.preventDefault();
+        close();
+      }}
       onClick={(event) => {
         if (event.target === ref.current) close();
       }}
     >
-      {title ? (
-        <div className="modal-heading">
-          <div>
-            <h2 id={headingId}>{title}</h2>
-            {subtitle && <p>{subtitle}</p>}
-          </div>
-          <button className="icon-button" aria-label="Tutup" onClick={close}>
-            <X size={20} />
-          </button>
-        </div>
-      ) : (
-        <div className="modal-close-only">
-          <button className="icon-button" aria-label="Tutup" onClick={close}>
-            <X size={20} />
-          </button>
-        </div>
-      )}
       {children}
     </dialog>
+  );
+}
+
+/** Title row of a dialog (it swaps together with the dialog content). */
+export function ModalHeading({
+  id,
+  title,
+  subtitle,
+  close,
+}: {
+  id?: string;
+  title: string;
+  subtitle?: string;
+  close: () => void;
+}) {
+  return title ? (
+    <div className="modal-heading">
+      <div>
+        <h2 id={id}>{title}</h2>
+        {subtitle && <p>{subtitle}</p>}
+      </div>
+      <button className="icon-button" aria-label="Tutup" onClick={close}>
+        <X size={20} />
+      </button>
+    </div>
+  ) : (
+    <div className="modal-close-only">
+      <button className="icon-button" aria-label="Tutup" onClick={close}>
+        <X size={20} />
+      </button>
+    </div>
   );
 }
 export function PanelHeading({
@@ -152,7 +220,15 @@ export function CategoryIcon({
               : Wallet;
   return <Icon size={size} strokeWidth={1.6} />;
 }
-export function NeedCard({ need, onOpen }: { need: Need; onOpen: () => void }) {
+export function NeedCard({
+  need,
+  onOpen,
+  className = "",
+}: {
+  need: Need;
+  onOpen: () => void;
+  className?: string;
+}) {
   const remaining = Math.max(0, need.amount - (need.paidAmount || 0));
   const progress = need.paid
     ? 100
@@ -163,7 +239,7 @@ export function NeedCard({ need, onOpen }: { need: Need; onOpen: () => void }) {
       );
   return (
     <button
-      className={`need-card ${need.kind === "recurring" ? "lime" : ""}`}
+      className={`need-card ${need.kind === "recurring" ? "lime" : ""} ${className}`}
       onClick={onOpen}
     >
       <div className="need-top">
@@ -202,14 +278,16 @@ export function NeedCard({ need, onOpen }: { need: Need; onOpen: () => void }) {
 export function TransactionRow({
   transaction,
   onClick,
+  className = "",
 }: {
   transaction: Transaction;
   onClick?: () => void;
+  className?: string;
 }) {
   const isIncome = transaction.type === "income";
   return (
     <button
-      className="transaction-row"
+      className={`transaction-row ${className}`}
       onClick={onClick}
       aria-label={`${transaction.title}, ${isIncome ? "pemasukan" : "pengeluaran"} ${currency(transaction.amount)}`}
     >
@@ -465,8 +543,12 @@ export function CustomSelect({
         />
       </button>
 
-      {open && (
-        <div className="custom-select-menu" role="listbox">
+      <Presence when={open}>
+        {(exiting) => (
+        <div
+          className={`custom-select-menu m-menu ${exiting ? "is-exiting" : ""}`}
+          role="listbox"
+        >
           {showSearch && (
             <div className="custom-select-search-wrap">
               <Search size={14} className="custom-select-search-icon" />
@@ -481,7 +563,9 @@ export function CustomSelect({
               />
             </div>
           )}
-          <div className="custom-select-options-list">
+          <div
+            className={`custom-select-options-list m-stagger ${exiting ? "is-exiting" : ""}`}
+          >
             {filtered.length === 0 ? (
               <div className="custom-select-empty">Tidak ada pilihan yang cocok</div>
             ) : (
@@ -518,7 +602,8 @@ export function CustomSelect({
             )}
           </div>
         </div>
-      )}
+        )}
+      </Presence>
 
       {name && <input type="hidden" name={name} value={String(currentVal ?? "")} />}
     </div>

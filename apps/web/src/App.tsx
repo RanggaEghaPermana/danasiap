@@ -25,6 +25,8 @@ import {
   Lightbulb,
   Camera,
   Trash2,
+  ArrowDownLeft,
+  Scale,
 } from "lucide-react";
 import {
   forecast,
@@ -41,10 +43,12 @@ import {
   DateLabel,
   Money,
   Modal,
+  ModalHeading,
   PanelHeading,
   Empty,
   processAvatarFile,
 } from "./components";
+import { DialogHost, alertDialog, confirmDialog } from "./dialog";
 import {
   Dashboard,
   Plans,
@@ -53,7 +57,16 @@ import {
   History,
   type Page,
   type Dialog,
+  type PlansTab,
 } from "./pages";
+import { DaySection, DayDetail, PotDetail, PurchaseCheck } from "./budget";
+import {
+  MorphSwap,
+  Presence,
+  TabIndicator,
+  useMorphMenu,
+  usePressFeedback,
+} from "./motion";
 import {
   Welcome,
   TransactionForm,
@@ -62,6 +75,10 @@ import {
   AttendanceForm,
   ProfileFields,
   validatedProfile,
+  validatedDailyItems,
+  draftDailyItems,
+  initialState,
+  type DailyItemDraft,
 } from "./forms";
 
 const url = import.meta.env.VITE_SUPABASE_URL;
@@ -90,7 +107,9 @@ const navigation = [
 export function App() {
   const finance = useFinance();
   const { state, dispatch } = finance;
+  usePressFeedback();
   const [page, setPage] = useState<Page>("home");
+  const [plansTab, setPlansTab] = useState<PlansTab>("needs");
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [toast, setToast] = useState("");
   const [session, setSession] = useState<Session | null>(null);
@@ -287,9 +306,13 @@ export function App() {
         if (snapshot.userId !== userId)
           throw new Error("Akun berubah saat memuat data. Coba lagi.");
         if (
-          !window.confirm(
-            "Gunakan catatan cloud di perangkat ini? Ekspor catatan lokal terlebih dahulu jika ingin menyimpannya.",
-          )
+          !(await confirmDialog({
+            title: "Pakai catatan cloud?",
+            message:
+              "Catatan di perangkat ini akan diganti dengan catatan cloud. Ekspor catatan lokal terlebih dahulu jika ingin menyimpannya.",
+            confirmText: "Pakai catatan cloud",
+            danger: true,
+          }))
         )
           return;
         localStorage.setItem(
@@ -401,9 +424,13 @@ export function App() {
           "Catatan atau akun berubah saat membaca file. Impor ulang cadangan.",
         );
       if (
-        !window.confirm(
-          "Ganti catatan perangkat dengan cadangan ini? Catatan saat ini akan disimpan sebagai cadangan pemulihan di perangkat.",
-        )
+        !(await confirmDialog({
+          title: "Pulihkan cadangan?",
+          message:
+            "Catatan di perangkat ini akan diganti dengan cadangan ini. Catatan saat ini disimpan dulu sebagai cadangan pemulihan di perangkat.",
+          confirmText: "Pulihkan",
+          danger: true,
+        }))
       )
         return;
       localStorage.setItem(
@@ -421,7 +448,20 @@ export function App() {
       );
     }
   };
-  const pageProps = { state, prediction, open: setDialog, navigate };
+  const pageProps = {
+    state,
+    prediction,
+    open: setDialog,
+    navigate,
+    dispatch: finance.dispatch,
+    plansTab,
+    setPlansTab,
+  };
+  const openShopping = () => {
+    setDialog(null);
+    setPlansTab("shop-run");
+    navigate("plans");
+  };
   if (!finance.initialized) return <Welcome start={finance.start} />;
   return (
     <div className="app-shell">
@@ -434,7 +474,8 @@ export function App() {
           <Brand />
         </button>
         <span className="sidebar-caption">RUANG KEUANGANMU</span>
-        <nav aria-label="Navigasi utama">
+        <nav aria-label="Navigasi utama" className="m-has-indicator">
+          <TabIndicator active={page} />
           {navigation.map(({ id, label, Icon }) => (
             <button
               className={page === id ? "active" : ""}
@@ -442,7 +483,11 @@ export function App() {
               onClick={() => navigate(id)}
             >
               <Icon size={19} strokeWidth={1.6} />
-              <span>{label}</span>
+              <span>
+                {id === "calendar" && state.profile.working === false
+                  ? "Kalender"
+                  : label}
+              </span>
               {page === id && <ArrowUpRight size={15} />}
             </button>
           ))}
@@ -533,10 +578,14 @@ export function App() {
                   className={userMenuOpen ? "rotate-180" : ""}
                 />
               </button>
-              {userMenuOpen && (
-                <div className="user-dropdown-menu" role="menu">
+              <Presence when={userMenuOpen}>
+                {(exiting) => (
+                <div
+                  className={`user-dropdown-menu m-menu m-stagger ${exiting ? "is-exiting" : ""}`}
+                  role="menu"
+                >
                   <div className="user-dropdown-header">
-                    <div className="user-dropdown-avatar-wrap">
+                    <div className="user-dropdown-avatar-wrap m-pop">
                       {state.profile.avatarUrl ? (
                         <img
                           src={state.profile.avatarUrl}
@@ -578,7 +627,8 @@ export function App() {
                             notify("Foto profil berhasil diperbarui.");
                             setUserMenuOpen(false);
                           } catch (err) {
-                            alert(
+                            void alertDialog(
+                              "Foto belum bisa dipakai",
                               err instanceof Error
                                 ? err.message
                                 : "Gagal memproses foto profil.",
@@ -637,7 +687,8 @@ export function App() {
                     </button>
                   )}
                 </div>
-              )}
+                )}
+              </Presence>
             </div>
             <button
               className="icon-button mobile-only"
@@ -675,6 +726,8 @@ export function App() {
               <button onClick={() => navigate("settings")}>Lihat detail</button>
             </div>
           )}
+          <MorphSwap swapKey={page} className="page-swap">
+          <div className="page-layer" data-page={page}>
           {page === "home" ? (
             <Dashboard {...pageProps} />
           ) : page === "plans" ? (
@@ -688,8 +741,11 @@ export function App() {
           ) : (
             <Settings
               state={state}
-              save={(profile) => {
+              save={(profile, items) => {
+                // Check the items first so a bad item never leaves half-saved settings.
+                const dailyItems = validatedDailyItems(items);
                 finance.dispatch({ type: "profile/update", profile });
+                finance.dispatch({ type: "daily/set", items: dailyItems });
                 notify("Pengaturan tersimpan.");
               }}
               session={session}
@@ -714,6 +770,8 @@ export function App() {
               importData={importData}
             />
           )}
+          </div>
+          </MorphSwap>
           <footer className="app-footer">
             <Brand small />
             <span>Lebih siap, satu hari setiap waktu.</span>
@@ -721,46 +779,30 @@ export function App() {
           </footer>
         </main>
       </div>
-      <nav className="mobile-nav" aria-label="Navigasi mobile">
-        <button
-          className={page === "home" ? "active" : ""}
-          aria-label="Beranda"
-          onClick={() => navigate("home")}
-        >
-          <LayoutDashboard size={20} />
-        </button>
-        <button
-          className={page === "plans" ? "active" : ""}
-          aria-label="Rencana"
-          onClick={() => navigate("plans")}
-        >
-          <Wallet size={20} />
-        </button>
-        <button
-          className="nav-add"
-          aria-label="Catat transaksi"
-          onClick={() => setDialog({ type: "transaction" })}
-        >
-          <Plus size={25} />
-        </button>
-        <button
-          className={page === "insights" ? "active" : ""}
-          aria-label="Statistik"
-          onClick={() => navigate("insights")}
-        >
-          <ChartNoAxesCombined size={20} />
-        </button>
-        <button
-          className={page === "calendar" ? "active" : ""}
-          aria-label="Kalender"
-          onClick={() => navigate("calendar")}
-        >
-          <CalendarDays size={20} />
-        </button>
-      </nav>
-      {dialog && (
+      <MobileNav
+        page={page}
+        navigate={navigate}
+        openDialog={setDialog}
+      />
+      <Presence when={dialog ? "dialog" : null}>
+        {(exiting) =>
+          dialog && (
         <Modal
-          key={dialog.type + ("need" in dialog ? dialog.need?.id : "")}
+          exiting={exiting}
+          labelledBy="dialog-title"
+          close={() => setDialog(null)}
+        >
+          <MorphSwap
+            className="modal-swap"
+            resetScroll
+            swapKey={
+              dialog.type +
+              ("need" in dialog ? dialog.need?.id : "") +
+              ("date" in dialog ? dialog.date : "")
+            }
+          >
+          <ModalHeading
+          id="dialog-title"
           title={
             dialog.type === "transaction"
               ? "Catat transaksi"
@@ -768,6 +810,16 @@ export function App() {
                 ? dialog.need?.title || "Rencana baru"
                 : dialog.type === "attendance"
                   ? "Catat hari kerjamu"
+                  : dialog.type === "day"
+                    ? new Intl.DateTimeFormat("id-ID", {
+                        weekday: "long",
+                        day: "numeric",
+                        month: "long",
+                      }).format(new Date(`${dialog.date}T12:00:00+07:00`))
+                    : dialog.type === "pot"
+                      ? "Uang Sisa"
+                      : dialog.type === "check"
+                        ? "Cek sebelum beli"
                   : dialog.type === "notifications"
                     ? "Pengingat untukmu"
                     : dialog.type === "setup"
@@ -781,14 +833,19 @@ export function App() {
               ? "Biar pengeluaran kecil pun tetap kelihatan."
               : dialog.type === "need" && !dialog.need
                 ? "Siapkan uangnya sebelum hari itu datang."
-                : undefined
+                : dialog.type === "check"
+                  ? "Lihat dulu dampaknya ke jatah dan uang wajib."
+                  : undefined
           }
           close={() => setDialog(null)}
-        >
+          />
           {dialog.type === "transaction" ? (
             <TransactionForm
               initialKind={dialog.kind}
+              initialFromLeftover={dialog.fromLeftover}
+              state={state}
               monthlyPayroll={state.profile.payrollCycle === "monthly"}
+              working={state.profile.working !== false}
               dispatch={finance.dispatch}
               done={done}
             />
@@ -799,17 +856,55 @@ export function App() {
                 state={state}
                 dispatch={finance.dispatch}
                 done={done}
+                openShopping={openShopping}
               />
             ) : (
               <NeedForm state={state} dispatch={finance.dispatch} done={done} />
             )
           ) : dialog.type === "attendance" ? (
-            <AttendanceForm
-              date={dialog.date}
+            <>
+              <AttendanceForm
+                date={dialog.date}
+                state={state}
+                dispatch={finance.dispatch}
+                done={done}
+              />
+              {dialog.date && (
+                <DaySection
+                  state={state}
+                  date={dialog.date}
+                  dispatch={finance.dispatch}
+                  openSettings={() => {
+                    setDialog(null);
+                    navigate("settings");
+                  }}
+                />
+              )}
+            </>
+          ) : dialog.type === "day" ? (
+            <DayDetail
               state={state}
+              date={dialog.date}
               dispatch={finance.dispatch}
-              done={done}
+              openNeed={(need) => setDialog({ type: "need", need })}
+              openSettings={() => {
+                setDialog(null);
+                navigate("settings");
+              }}
             />
+          ) : dialog.type === "pot" ? (
+            <PotDetail
+              state={state}
+              use={() =>
+                setDialog({
+                  type: "transaction",
+                  kind: "expense",
+                  fromLeftover: true,
+                })
+              }
+            />
+          ) : dialog.type === "check" ? (
+            <PurchaseCheck state={state} />
           ) : dialog.type === "setup" ? (
             <FreshSetup
               start={(s) => {
@@ -900,30 +995,141 @@ export function App() {
               </p>
             </div>
           )}
+          </MorphSwap>
         </Modal>
-      )}
-      {toast && (
-        <div className="toast" role="status">
-          <Check size={17} />
-          {toast}
-          <button aria-label="Tutup pesan" onClick={() => setToast("")}>
-            <X size={16} />
-          </button>
-        </div>
-      )}
+          )
+        }
+      </Presence>
+      <DialogHost />
+      <Presence when={toast || null}>
+        {(exiting) => (
+          <div
+            className={`toast ${exiting ? "is-exiting" : ""}`}
+            role="status"
+          >
+            <Check size={17} className="m-pop-in" />
+            {toast}
+            <button aria-label="Tutup pesan" onClick={() => setToast("")}>
+              <X size={16} />
+            </button>
+          </div>
+        )}
+      </Presence>
     </div>
+  );
+}
+
+/**
+ * Bottom floating nav (phone width). "+" morphs the pill into an action pill:
+ * [× tutup] [Uang keluar] [Uang masuk] [Cek sebelum beli]; choosing one morphs it back
+ * and opens that dialog.
+ */
+function MobileNav({
+  page,
+  navigate,
+  openDialog,
+}: {
+  page: Page;
+  navigate: (page: Page) => void;
+  openDialog: (dialog: Dialog) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLElement>(null);
+  useMorphMenu(ref, open, setOpen, {
+    first: ".nav-primary",
+    trigger: ".nav-add",
+  });
+  const choose = (dialog: Dialog) => {
+    setOpen(false);
+    openDialog(dialog);
+  };
+  const tabs = [
+    { id: "home", label: "Beranda", Icon: LayoutDashboard },
+    { id: "plans", label: "Rencana", Icon: Wallet },
+    { id: "insights", label: "Statistik", Icon: ChartNoAxesCombined },
+    { id: "calendar", label: "Kalender", Icon: CalendarDays },
+  ] as const;
+  const tab = ({ id, label, Icon }: (typeof tabs)[number]) => (
+    <button
+      key={id}
+      className={page === id ? "active" : ""}
+      aria-label={label}
+      aria-current={page === id ? "page" : undefined}
+      onClick={() => navigate(id)}
+    >
+      <Icon size={20} />
+    </button>
+  );
+  return (
+    <MorphSwap
+      as="nav"
+      className="mobile-nav"
+      layerClassName="nav-layer"
+      containerRef={ref}
+      swapKey={open ? "actions" : "nav"}
+      morph="both"
+      aria-label="Navigasi mobile"
+    >
+      {open ? (
+        <>
+          <button
+            className="nav-action nav-close"
+            aria-label="Tutup pilihan catat"
+            onClick={() => setOpen(false)}
+          >
+            <X size={19} />
+          </button>
+          <button
+            className="nav-action nav-primary"
+            onClick={() => choose({ type: "transaction", kind: "expense" })}
+          >
+            <ArrowUpRight size={17} />
+            Uang keluar
+          </button>
+          <button
+            className="nav-action"
+            onClick={() => choose({ type: "transaction", kind: "income" })}
+          >
+            <ArrowDownLeft size={17} />
+            Uang masuk
+          </button>
+          <button
+            className="nav-action"
+            onClick={() => choose({ type: "check" })}
+          >
+            <Scale size={17} />
+            Cek sebelum beli
+          </button>
+        </>
+      ) : (
+        <>
+          <TabIndicator active={page} />
+          {tabs.slice(0, 2).map(tab)}
+          <button
+            className="nav-add"
+            aria-label="Catat transaksi"
+            aria-expanded={false}
+            onClick={() => setOpen(true)}
+          >
+            <Plus size={25} />
+          </button>
+          {tabs.slice(2).map(tab)}
+        </>
+      )}
+    </MorphSwap>
   );
 }
 
 function FreshSetup({ start }: { start: (state: AppState) => void }) {
   const [profile, setProfile] = useState(defaultState().profile);
+  const [items, setItems] = useState<DailyItemDraft[]>([]);
   const [error, setError] = useState("");
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
         try {
-          start({ ...defaultState(), profile: validatedProfile(profile) });
+          start(initialState(profile, items));
         } catch (err) {
           setError(err instanceof Error ? err.message : "Profil belum valid.");
         }
@@ -932,7 +1138,12 @@ function FreshSetup({ start }: { start: (state: AppState) => void }) {
       <p className="form-hint">
         Data contoh akan diganti dengan catatan kosong milikmu.
       </p>
-      <ProfileFields profile={profile} setProfile={setProfile} />
+      <ProfileFields
+        profile={profile}
+        setProfile={setProfile}
+        items={items}
+        setItems={setItems}
+      />
       {error && (
         <p className="form-error" role="alert">
           {error}
@@ -1054,7 +1265,7 @@ function Settings({
   importData,
 }: {
   state: AppState;
-  save: (p: Profile) => void;
+  save: (p: Profile, items: DailyItemDraft[]) => void;
   session: Session | null;
   cloudReady: boolean;
   syncStatus: string;
@@ -1066,11 +1277,15 @@ function Settings({
   importData: (f?: File) => Promise<void>;
 }) {
   const [profile, setProfile] = useState(state.profile);
+  const [items, setItems] = useState(() => draftDailyItems(state));
   const [error, setError] = useState("");
   useEffect(() => {
     setProfile(state.profile);
     setError("");
   }, [state.profile]);
+  useEffect(() => {
+    setItems(draftDailyItems(state));
+  }, [state.dailyItems]);
   return (
     <>
       <div className="section-title">
@@ -1086,7 +1301,7 @@ function Settings({
             onSubmit={(e) => {
               e.preventDefault();
               try {
-                save(validatedProfile(profile));
+                save(validatedProfile(profile), items);
                 setError("");
               } catch (err) {
                 setError(
@@ -1095,7 +1310,12 @@ function Settings({
               }
             }}
           >
-            <ProfileFields profile={profile} setProfile={setProfile} />
+            <ProfileFields
+              profile={profile}
+              setProfile={setProfile}
+              items={items}
+              setItems={setItems}
+            />
             <p className="form-hint">
               Mengubah saldo awal akan menghitung ulang seluruh saldo. Untuk
               pemasukan baru, gunakan Catat transaksi.

@@ -59,6 +59,11 @@ export const styles = StyleSheet.create({
   tinyButton: {paddingHorizontal: 12, paddingVertical: 9, backgroundColor: colors.pale, borderRadius: 18},
   welcome: {flex: 1, backgroundColor: colors.lime, padding: 26, justifyContent: 'space-between'},
   welcomeTitle: {fontFamily: 'Barlow', fontSize: 51, lineHeight: 52, color: colors.ink},
-  day: {width: '12.5%', height: 44, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginBottom: 4},
+  calendarGrid: {flexDirection: 'row', flexWrap: 'wrap'},
+  dayCell: {width: `${100 / 7}%`, alignItems: 'center', marginBottom: 9},
+  day: {width: '87.5%', height: 44, borderRadius: 18, alignItems: 'center', justifyContent: 'center'},
+  toastWrap: {position: 'absolute', left: 20, right: 20, alignItems: 'center'},
+  toast: {flexDirection: 'row', alignItems: 'center', gap: 12, maxWidth: '100%', backgroundColor: '#20281F', borderWidth: 1, borderColor: '#4A583B', borderRadius: 16, paddingVertical: 14, paddingHorizontal: 16, shadowColor: '#000', shadowOffset: {width: 0, height: 12}, shadowOpacity: .2, shadowRadius: 18, elevation: 10},
+  toastText: {flexShrink: 1, fontFamily: 'DM', fontSize: 12, lineHeight: 17, color: '#F5FAEB'},
   stat: {flex: 1, backgroundColor: colors.lime, borderRadius: 21, padding: 17, minHeight: 146, gap: 7},
 });

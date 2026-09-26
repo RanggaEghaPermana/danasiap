@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  addDays, balance, calculatePayroll, defaultState, demoState, forecast, getHoliday, getMonthBounds,
+  addDays, applyAutoAttendance, applyAutoDaily, applyAutomations, balance, calculatePayroll, checkPurchase, electricityEstimate,
+  migrateDailyBudget, periodBounds, periodBudget, periodHistory, shoppingTotal, defaultState, demoState, forecast, getHoliday, getMonthBounds,
   getPreviousMonthBounds, isNationalHoliday, isWorkday, localDate, reducer, remainingAmount, validateState, type AppState, type Need,
 } from '../src/index';
 
@@ -505,5 +506,273 @@ describe('monthly payroll cycle and activity allowance', () => {
     expect(isNationalHoliday('2027-12-26')).toBe(true);
     expect(isWorkday(state, '2027-03-08')).toBe(false);
     expect(isWorkday(state, '2027-03-09')).toBe(true);
+  });
+});
+
+describe('automatic attendance', () => {
+  const FRIDAY = '2026-09-25';
+
+  it('records unrecorded workdays as present, skipping days off and earlier history', () => {
+    let state = setup({ startDate: '2026-09-14', autoAttendanceFrom: MONDAY });
+    state = applyAutoAttendance(state, '2026-09-27');
+    expect(state.attendance.map((a) => a.date)).toEqual(['2026-09-21', '2026-09-22', '2026-09-23', '2026-09-24', FRIDAY]);
+    expect(state.attendance.every((a) => a.status === 'present' && a.auto && !a.planned)).toBe(true);
+    expect(balance(state, '2026-09-27')).toBe(500_000);
+    expect(applyAutoAttendance(state, '2026-09-27')).toBe(state);
+  });
+
+  it('keeps a day marked absent and does not add its income back', () => {
+    let state = applyAutoAttendance(setup(), MONDAY);
+    expect(balance(state, MONDAY)).toBe(100_000);
+    state = reducer(state, { type: 'attendance/record', attendance: { date: MONDAY, status: 'absent' } });
+    expect(state.attendance[0].auto).toBeUndefined();
+    state = applyAutoAttendance(state, MONDAY);
+    expect(balance(state, MONDAY)).toBe(0);
+    expect(state.attendance).toHaveLength(1);
+  });
+
+  it('starts from today for records created before automatic attendance existed', () => {
+    const { autoAttendanceFrom: _unused, ...profile } = setup({ startDate: '2026-09-01' }).profile;
+    const state = applyAutoAttendance({ ...setup(), profile }, MONDAY);
+    expect(state.profile.autoAttendanceFrom).toBe(MONDAY);
+    expect(state.attendance.map((a) => a.date)).toEqual([MONDAY]);
+  });
+
+  it('confirms an advance plan once its day arrives', () => {
+    const tuesday = '2026-09-22';
+    let state = reducer(setup(), { type: 'attendance/record', attendance: { date: tuesday, status: 'half' } });
+    vi.setSystemTime(new Date(`${tuesday}T05:00:00Z`));
+    state = applyAutoAttendance(state, tuesday);
+    expect(state.attendance.find((a) => a.date === tuesday)).toMatchObject({ status: 'half', planned: false });
+    expect(balance(state, tuesday)).toBe(150_000);
+  });
+});
+
+describe('not working', () => {
+  it('expects no work income or salary and skips automatic attendance', () => {
+    const state = setup({ working: false, payrollCycle: 'monthly', payday: 25, activityAllowance: 20_000, openingBalance: 100_000 });
+    expect(isWorkday(state, MONDAY)).toBe(false);
+    expect(applyAutoAttendance(state, MONDAY)).toBe(state);
+    expect(forecast(state, { asOf: MONDAY, horizonDays: 30 }).expectedIncome).toBe(0);
+  });
+
+  it('still counts income recorded by hand', () => {
+    const state = reducer(setup({ working: false }), { type: 'transaction/add', transaction: { id: 'kiriman', title: 'Transfer', amount: 500_000, type: 'income', category: 'Kiriman', date: MONDAY } });
+    expect(balance(state, MONDAY)).toBe(500_000);
+  });
+
+  it('does not backfill the non-working period when work resumes', () => {
+    let state = setup({ working: false, autoAttendanceFrom: '2026-09-01' });
+    state = reducer(state, { type: 'profile/update', profile: { working: true } });
+    expect(state.profile.autoAttendanceFrom).toBe(MONDAY);
+    expect(applyAutoAttendance(state, MONDAY).attendance.map((a) => a.date)).toEqual([MONDAY]);
+  });
+});
+
+describe('budget periods', () => {
+  it('starts each period on the chosen day of the month', () => {
+    expect(periodBounds('2026-09-26', 26)).toEqual({ start: '2026-09-26', end: '2026-10-25' });
+    expect(periodBounds('2026-09-25', 26)).toEqual({ start: '2026-08-26', end: '2026-09-25' });
+    expect(periodBounds('2026-01-10', 26)).toEqual({ start: '2025-12-26', end: '2026-01-25' });
+    expect(periodBounds('2026-02-10')).toEqual({ start: '2026-02-01', end: '2026-02-28' });
+  });
+});
+
+describe('daily items and leftovers', () => {
+  const SATURDAY = '2026-09-26';
+  const items = [
+    { id: 'a', title: 'Ongkos Anak A', amount: 50_000, days: [1, 2, 3, 4, 5], skipHolidays: true },
+    { id: 'b', title: 'Ongkos Anak B', amount: 30_000, days: [1, 2, 3, 4, 5, 6], skipHolidays: true },
+    { id: 'masak', title: 'Masak', amount: 70_000, days: [0, 1, 2, 3, 4, 5, 6], skipHolidays: false },
+  ];
+  function family(): AppState {
+    vi.setSystemTime(new Date(`${SATURDAY}T05:00:00Z`));
+    const state = setup({ working: false, openingBalance: 5_000_000, startDate: '2026-09-01', periodStartDay: 26 });
+    return applyAutoDaily(reducer(state, { type: 'daily/set', items }), SATURDAY);
+  }
+
+  it('records the day\'s items automatically and plans the whole period', () => {
+    const state = family();
+    expect(state.transactions.map((t) => t.id).sort()).toEqual(['daily:b:2026-09-26', 'daily:masak:2026-09-26']);
+    expect(balance(state, SATURDAY)).toBe(4_900_000);
+    const budget = periodBudget(state, SATURDAY);
+    expect(budget.dailyPlans.map((plan) => [plan.item.id, plan.days, plan.total])).toEqual([
+      ['a', 20, 1_000_000], ['b', 25, 750_000], ['masak', 30, 2_100_000],
+    ]);
+    expect(budget.dailyRemaining).toBe(3_750_000);
+    expect(budget.freeMoney).toBe(1_150_000);
+    expect(budget.perDay).toBe(38_333);
+    expect(applyAutoDaily(state, SATURDAY)).toBe(state);
+  });
+
+  it('moves unused money into the pot without changing the free money', () => {
+    let state = reducer(family(), { type: 'daily/leftover', itemId: 'masak', date: SATURDAY, amount: 20_000 });
+    expect(state.transactions.find((t) => t.id === 'daily:masak:2026-09-26')?.amount).toBe(50_000);
+    let budget = periodBudget(state, SATURDAY);
+    expect(budget.leftoverPot).toBe(20_000);
+    expect(budget.freeMoney).toBe(1_150_000);
+    // Marked ahead: Anak A stays home on Monday. Nothing changes until that day arrives.
+    state = reducer(state, { type: 'daily/leftover', itemId: 'a', date: '2026-09-28', amount: 50_000 });
+    expect(periodBudget(state, SATURDAY).freeMoney).toBe(1_150_000);
+    vi.setSystemTime(new Date('2026-09-28T05:00:00Z'));
+    state = applyAutoDaily(state, '2026-09-28');
+    expect(state.transactions.some((t) => t.id === 'daily:a:2026-09-28')).toBe(false);
+    budget = periodBudget(state, '2026-09-28');
+    expect(budget.leftoverPot).toBe(70_000);
+    expect(budget.dailyPlans[0].today).toEqual({ scheduled: true, recorded: 0, leftover: 50_000 });
+  });
+
+  it('takes spending from the pot and lowers the allowance when overspending', () => {
+    let state = reducer(family(), { type: 'daily/leftover', itemId: 'b', date: SATURDAY, amount: 30_000 });
+    const budget = periodBudget(state, SATURDAY);
+    expect(budget.leftoverPot).toBe(30_000);
+    expect(checkPurchase(budget, 20_000)).toMatchObject({ verdict: 'jatah', fromAllowance: 20_000, fromLeftover: 0 });
+    expect(checkPurchase(budget, 60_000)).toMatchObject({ verdict: 'sisa', fromAllowance: 38_333, fromLeftover: 21_667 });
+    const big = checkPurchase(budget, 500_000);
+    expect(big.verdict).toBe('turun');
+    expect(big.perDayAfter).toBe(Math.floor((1_150_000 - 470_000) / 29));
+    expect(checkPurchase(budget, 2_000_000)).toMatchObject({ verdict: 'bahaya', shortfall: 820_000 });
+
+    state = reducer(state, { type: 'transaction/add', transaction: { id: 'jajan', title: 'Bakso', amount: 60_000, type: 'expense', category: 'Jajan', date: SATURDAY, fromLeftover: 21_667 } });
+    const after = periodBudget(state, SATURDAY);
+    expect(after.leftoverPot).toBe(8_333);
+    expect(after.spentToday).toBe(38_333);
+    expect(after.leftToday).toBe(0);
+  });
+
+  it('warns when the period cannot cover its obligations', () => {
+    const state = reducer(family(), { type: 'transaction/add', transaction: { id: 'besar', title: 'Servis', amount: 1_300_000, type: 'expense', category: 'Darurat', date: SATURDAY } });
+    const budget = periodBudget(state, SATURDAY);
+    expect(budget.shortfall).toBe(150_000);
+    expect(budget.perDay).toBe(0);
+  });
+
+  it('marks a school holiday range as unused and ignores days off', () => {
+    const state = reducer(family(), { type: 'daily/skipRange', itemId: 'a', from: '2026-10-05', to: '2026-10-11' });
+    expect(state.leftovers!.map((l) => l.date)).toEqual(['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09']);
+    expect(periodBudget(state, SATURDAY).dailyPlans[0]).toMatchObject({ days: 15, total: 750_000 });
+  });
+
+  it('does not backfill earlier days when a schedule changes', () => {
+    let state = family();
+    vi.setSystemTime(new Date('2026-10-03T05:00:00Z'));
+    state = reducer(state, { type: 'daily/set', items: items.map((item) => item.id === 'a' ? { ...item, days: [1, 2, 3, 4, 5, 6] } : item) });
+    state = applyAutoDaily(state, '2026-10-03');
+    expect(state.dailyItems![0].since).toBe('2026-10-03');
+    expect(state.transactions.filter((t) => t.dailyItemId === 'a').map((t) => t.date)).toEqual(['2026-10-03']);
+  });
+
+  it('keeps income for the next period out of the current one', () => {
+    vi.setSystemTime(new Date('2026-09-25T05:00:00Z'));
+    let state = setup({ working: false, openingBalance: 300_000, startDate: '2026-09-01', periodStartDay: 26 });
+    state = reducer(state, { type: 'transaction/add', transaction: { id: 'ayah', title: 'Transfer ayah', amount: 5_000_000, type: 'income', category: 'Kiriman', date: '2026-09-25', effectiveDate: '2026-09-26' } });
+    const lastDay = periodBudget(state, '2026-09-25');
+    expect(lastDay.money).toBe(300_000);
+    expect(lastDay.heldForNextPeriod).toBe(5_000_000);
+    expect(lastDay.perDay).toBe(300_000);
+    const firstDay = periodBudget(state, '2026-09-26');
+    expect(firstDay.money).toBe(5_300_000);
+    expect(firstDay.carryOver).toBe(300_000);
+    expect(firstDay.periodIncome).toBe(5_000_000);
+  });
+
+  it('keeps each period\'s leftovers separate in the history', () => {
+    let state = reducer(family(), { type: 'daily/leftover', itemId: 'masak', date: SATURDAY, amount: 10_000 });
+    vi.setSystemTime(new Date('2026-10-27T05:00:00Z'));
+    state = applyAutoDaily(state, '2026-10-27');
+    state = reducer(state, { type: 'daily/leftover', itemId: 'b', date: '2026-10-27', amount: 30_000 });
+    const [previous] = periodHistory(state, '2026-10-27');
+    expect(previous).toMatchObject({ start: '2026-09-26', end: '2026-10-25', leftover: 10_000 });
+    expect(periodBudget(state, '2026-10-27').leftoverPot).toBe(30_000);
+  });
+
+  it('turns the old daily budget into an automatic item', () => {
+    const { dailyItems: _unused, ...legacy } = setup({ dailyBudget: 30_000 });
+    const migrated = migrateDailyBudget(legacy, MONDAY);
+    expect(migrated.profile.dailyBudget).toBe(0);
+    expect(migrated.dailyItems).toEqual([{ id: 'harian-rutin', title: 'Harian rutin', amount: 30_000, days: [0, 1, 2, 3, 4, 5, 6], skipHolidays: false, since: MONDAY }]);
+    expect(applyAutomations(legacy, MONDAY).transactions.some((t) => t.id === 'daily:harian-rutin:2026-09-21')).toBe(true);
+  });
+
+  it('includes future daily items in the cash forecast', () => {
+    const state = family();
+    const result = forecast(state, { asOf: SATURDAY, horizonDays: 3 });
+    expect(result.days.map((day) => day.expenses)).toEqual([0, 70_000, 150_000]);
+  });
+});
+
+describe('monthly shopping list', () => {
+  const list = [
+    { id: 'beras', name: 'Beras 10 kg', qty: 1, price: 145_000, image: 'data:image/jpeg;base64,AAAA' },
+    { id: 'minyak', name: 'Minyak 2 L', qty: 2, price: 38_000 },
+    { id: 'sabun', name: 'Sabun cuci', qty: 1, price: 25_000, skip: true },
+  ];
+
+  it('keeps one need for the list total on the chosen day', () => {
+    vi.setSystemTime(new Date('2026-09-27T05:00:00Z'));
+    const state = reducer(setup({ periodStartDay: 26, openingBalance: 1_000_000 }), { type: 'shopping/set', items: list, dueDay: 28 });
+    expect(shoppingTotal(state.shopping)).toBe(221_000);
+    expect(state.needs).toMatchObject([{ title: 'Belanja bulanan', amount: 221_000, dueDate: '2026-09-28' }]);
+    const updated = reducer(state, { type: 'shopping/set', items: list.map((item) => ({ ...item, skip: false })), dueDay: 28 });
+    expect(updated.needs).toHaveLength(1);
+    expect(updated.needs[0].amount).toBe(246_000);
+  });
+
+  it('records the real total, keeps new prices and moves the difference into the pot', () => {
+    vi.setSystemTime(new Date('2026-09-28T05:00:00Z'));
+    let state = reducer(setup({ periodStartDay: 26, openingBalance: 1_000_000 }), { type: 'shopping/set', items: list, dueDay: 28 });
+    state = reducer(state, { type: 'shopping/finish', id: 'belanja-1', date: '2026-09-28', items: [
+      { id: 'beras', qty: 1, price: 140_000, bought: true },
+      { id: 'minyak', qty: 2, price: 36_000, bought: true },
+      { id: 'sabun', qty: 1, price: 25_000, bought: false },
+    ] });
+    expect(balance(state, '2026-09-28')).toBe(788_000);
+    expect(state.leftovers).toMatchObject([{ amount: 9_000, title: 'Sisa belanja bulanan' }]);
+    expect(state.shopping!.items.map((item) => [item.price, item.skip])).toEqual([[140_000, undefined], [36_000, undefined], [25_000, undefined]]);
+    expect(state.shopping!.items[0].image).toBe('data:image/jpeg;base64,AAAA');
+    const open = state.needs.filter((need) => !need.paid);
+    expect(open).toMatchObject([{ amount: 237_000, dueDate: '2026-10-28' }]);
+    expect(periodBudget(state, '2026-09-28').obligations).toBe(0);
+  });
+});
+
+describe('electricity tokens', () => {
+  function tokens(): AppState {
+    vi.setSystemTime(new Date('2026-09-20T05:00:00Z'));
+    let state = setup({ openingBalance: 1_000_000 });
+    state = reducer(state, { type: 'electricity/purchase', purchase: { id: 't1', date: '2026-09-01', amount: 200_000, kwh: 140 } });
+    return reducer(state, { type: 'electricity/purchase', purchase: { id: 't2', date: '2026-09-13', amount: 200_000, kwh: 140 } });
+  }
+
+  it('learns how long a purchase lasts and plans the next one', () => {
+    const state = tokens();
+    const estimate = electricityEstimate(state, '2026-09-20');
+    expect(estimate).toMatchObject({ costPerDay: 16_667, daysPerPurchase: 12, nextPurchaseDate: '2026-09-25', monthlyCost: 500_000 });
+    expect(state.needs.filter((need) => !need.paid)).toMatchObject([{ title: 'Token listrik', amount: 200_000, dueDate: '2026-09-25', intervalDays: 12 }]);
+    expect(balance(state, '2026-09-20')).toBe(600_000);
+  });
+
+  it('shows how much to save to stay within the monthly budget', () => {
+    const state = reducer(tokens(), { type: 'electricity/settings', monthlyBudget: 400_000 });
+    const target = electricityEstimate(state, '2026-09-20').target!;
+    expect(target.overBudget).toBe(100_000);
+    expect(target.kwhPerDay).toBeCloseTo(9.33, 2);
+    expect(target.saveKwhPerDay).toBeCloseTo(2.33, 2);
+  });
+
+  it('uses meter readings for the remaining days', () => {
+    let state = reducer(tokens(), { type: 'electricity/reading', reading: { date: '2026-09-16', kwh: 60 } });
+    state = reducer(state, { type: 'electricity/reading', reading: { date: '2026-09-20', kwh: 16 } });
+    const estimate = electricityEstimate(state, '2026-09-20');
+    expect(estimate.kwhPerDay).toBe(11);
+    expect(estimate.daysLeft).toBeCloseTo(16 / 11, 5);
+    expect(estimate.nextPurchaseDate).toBe('2026-09-21');
+  });
+
+  it('rejects malformed budget data', () => {
+    expect(() => validateState({ ...setup(), dailyItems: [{ id: 'x', title: 'X', amount: 0, days: [1], skipHolidays: true, since: MONDAY }] })).toThrow();
+    expect(() => validateState({ ...setup(), shopping: { dueDay: 1, items: [{ id: 'x', name: 'X', qty: 1, price: 1, image: 'javascript:alert(1)' }] } })).toThrow();
+    expect(() => validateState({ ...setup(), shopping: { dueDay: 1, items: [{ id: 'x', name: 'X', qty: 1, price: 1, image: `data:image/jpeg;base64,${'A'.repeat(90_000)}` }] } })).toThrow();
+    expect(() => validateState({ ...setup(), electricity: { purchases: [{ id: 'p', date: MONDAY, amount: 100, kwh: -1 }], readings: [] } })).toThrow();
   });
 });

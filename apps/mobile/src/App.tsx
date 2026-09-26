@@ -1,18 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, AppState as NativeAppState, Dimensions, Image, Keyboard, LayoutAnimation, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, UIManager, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Animated, AppState as NativeAppState, BackHandler, Dimensions, GestureResponderEvent, Image, Keyboard, LayoutChangeEvent, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, UIManager, View, useWindowDimensions } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Feather } from '@expo/vector-icons';
 import { useFonts, BarlowCondensed_500Medium, BarlowCondensed_600SemiBold } from '@expo-google-fonts/barlow-condensed';
 import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans';
 import Svg, { Circle, ClipPath, Defs, G, Path, Pattern, Rect } from 'react-native-svg';
-import { AppState, Attendance, FinancialAction, Need, addDays, balance, calculatePayroll, currency, defaultState, demoState, forecast, formatThousands, getHoliday, isNationalHoliday, isWorkday, localDate, parseThousands, reducer, remainingAmount, validateState } from '@danasiap/core';
+import { AppState, Attendance, DailyItem, FinancialAction, MAX_ITEM_IMAGE, Need, TOKEN_TARIFF, addDays, applyAutomations, balance, calculatePayroll, checkPurchase, currency, dailyTransactionId, defaultState, demoState, electricityEstimate, forecast, formatThousands, getHoliday, isElectricityNeed, isNationalHoliday, isScheduled, isShoppingNeed, isWorkday, localDate, migrateDailyBudget, parseThousands, periodBudget, periodHistory, reducer, remainingAmount, shoppingDueDate, shoppingTotal, validateState } from '@danasiap/core';
 import { loadPlan, savePlan } from './storage';
+import { DialogHost, showDialog } from './dialog';
 import { enableReminders, scheduleReminders } from './notifications';
 import { cloud, cloudConfigured } from './cloud';
 import * as ImagePicker from 'expo-image-picker';
+import { SaveFormat, manipulateAsync } from 'expo-image-manipulator';
 import * as Clipboard from 'expo-clipboard';
 import { colors as c, styles as s } from './theme';
+import { Appear, BlurLayer, Collapse, BlurTarget, CrossBlur, FadeBg, FlyLayer, PopIn, PressScale, RollingValue, SegmentPills, SheetModal, StaggerList, T, Veiled, exit, fade, flyChip, isReducedMotion, layoutSpring, measure, pointOf, spring, useReducedMotion, useVeil } from './motion';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -20,76 +23,24 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 
 type IconName = React.ComponentProps<typeof Feather>['name'];
 type Tab = 'home' | 'needs' | 'calendar' | 'insights';
-type Sheet = 'expense' | 'income' | 'need' | 'attendance' | 'settings' | 'setup' | 'cloud' | 'backup' | null;
+type Sheet = 'expense' | 'income' | 'need' | 'attendance' | 'settings' | 'setup' | 'cloud' | 'backup' | 'daily' | 'leftover' | 'check' | 'shopping' | 'token' | 'skip' | null;
+type DailyDraft = {id: string; title: string; amount: string; days: number[]; skipHolidays: boolean};
+type ShopDraft = {id: string; name: string; qty: string; price: string; skip: boolean; bought: boolean; image?: string};
 const weekdays = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const shortDate = (date: string) => new Date(`${date}T12:00:00+07:00`).toLocaleDateString('id-ID', {day: 'numeric', month: 'short', timeZone: 'Asia/Jakarta'});
 const number = (input: string) => parseThousands(input);
+/** Accepts both comma and dot decimals, e.g. quantities or kWh. */
+const decimal = (input: string) => {const value = Number(input.trim().replace(/\s/g, '').replace(',', '.')); return input.trim() && Number.isFinite(value) ? value : NaN;};
+const kwhText = (value: number) => (Math.round(value * 10) / 10).toLocaleString('id-ID', {maximumFractionDigits: 1});
 function Icon({name, size = 19, color = c.ink}: {name: IconName; size?: number; color?: string}) { return <Feather name={name} size={size} color={color} />; }
 function Grid({dark = false}: {dark?: boolean}) {
   return <Svg pointerEvents="none" style={{position: 'absolute', top: 0, bottom: 0, left: 0, right: 0}} width="100%" height="100%"><Pattern id="grid" x="0" y="0" width="39" height="39" patternUnits="userSpaceOnUse"><Path d="M 39 0 L 0 0 0 39" fill="none" stroke={dark ? '#49503E' : '#87A454'} strokeOpacity={dark ? .21 : .08} strokeWidth=".8" /></Pattern><Rect width="100%" height="100%" fill="url(#grid)" /></Svg>;
 }
 function PanelNotch() { return <View pointerEvents="none" style={{position: 'absolute', top: -1, left: '50%', marginLeft: -16, height: 8, width: 32, backgroundColor: c.pale, borderBottomLeftRadius: 20, borderBottomRightRadius: 20}} />; }
 
-const AnimatedPressableBase = Animated.createAnimatedComponent(Pressable);
-
-function AnimatedPressable({
-  onPress,
-  children,
-  style,
-  scaleTo = 0.94,
-  disabled,
-  accessibilityRole = 'button',
-  accessibilityLabel,
-  accessibilityState,
-  hitSlop,
-}: {
-  onPress?: () => void;
-  children: React.ReactNode;
-  style?: any;
-  scaleTo?: number;
-  disabled?: boolean;
-  accessibilityRole?: any;
-  accessibilityLabel?: string;
-  accessibilityState?: any;
-  hitSlop?: any;
-}) {
-  const scale = useRef(new Animated.Value(1)).current;
-
-  const handlePressIn = () => {
-    Animated.spring(scale, {
-      toValue: scaleTo,
-      useNativeDriver: true,
-      speed: 45,
-      bounciness: 4,
-    }).start();
-  };
-
-  const handlePressOut = () => {
-    Animated.spring(scale, {
-      toValue: 1,
-      useNativeDriver: true,
-      speed: 30,
-      bounciness: 8,
-    }).start();
-  };
-
-  return (
-    <AnimatedPressableBase
-      onPress={onPress}
-      onPressIn={handlePressIn}
-      onPressOut={handlePressOut}
-      disabled={disabled}
-      accessibilityRole={accessibilityRole}
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={accessibilityState}
-      hitSlop={hitSlop}
-      style={[{transform: [{scale}]}, style]}
-    >
-      {children}
-    </AnimatedPressableBase>
-  );
-}
+/** Every pressable in the app uses the shared press feedback (pattern 5). */
+const AnimatedPressable = PressScale;
 
 function CardChip() {
   return (
@@ -147,13 +98,12 @@ function WalletBackground({width = 350, height = 240}: {width?: number; height?:
     </Svg>
   );
 }
-function Button({title, onPress, secondary, disabled, icon}: {title: string; onPress: () => void; secondary?: boolean; disabled?: boolean; icon?: IconName}) {
+function Button({title, onPress, secondary, disabled, icon}: {title: string; onPress: (event: GestureResponderEvent) => void; secondary?: boolean; disabled?: boolean; icon?: IconName}) {
   return (
     <AnimatedPressable
       accessibilityLabel={title}
       onPress={onPress}
       disabled={disabled}
-      scaleTo={0.96}
       style={[s.button, secondary && s.secondaryButton, disabled && {opacity: .45}]}
     >
       {icon && <Icon name={icon} size={17} color={secondary ? c.ink : c.lime} />}
@@ -161,7 +111,7 @@ function Button({title, onPress, secondary, disabled, icon}: {title: string; onP
     </AnimatedPressable>
   );
 }
-function Field({label, value, onChange, placeholder, numeric, secret, multiline}: {label: string; value: string; onChange: (value: string) => void; placeholder?: string; numeric?: boolean; secret?: boolean; multiline?: boolean}) {
+function Field({label, value, onChange, placeholder, numeric, decimal, secret, multiline}: {label: string; value: string; onChange: (value: string) => void; placeholder?: string; numeric?: boolean; decimal?: boolean; secret?: boolean; multiline?: boolean}) {
   const handleChange = (text: string) => {
     if (numeric) {
       if (text === '') {
@@ -174,14 +124,14 @@ function Field({label, value, onChange, placeholder, numeric, secret, multiline}
       onChange(text);
     }
   };
-  return <View style={s.field}><Text style={s.fieldLabel}>{label}</Text><TextInput accessibilityLabel={label} value={numeric ? (value ? formatThousands(value) : '') : value} onChangeText={handleChange} placeholder={placeholder ?? (numeric ? '0' : undefined)} placeholderTextColor="#A0A995" keyboardType={numeric ? 'numeric' : 'default'} autoCapitalize={secret || multiline || label.toLowerCase().includes('email') ? 'none' : 'sentences'} autoCorrect={!multiline && !secret} spellCheck={!multiline && !secret} secureTextEntry={secret} multiline={multiline} style={[s.input, multiline && {height: 120, textAlignVertical: 'top'}]} /></View>;
+  return <View style={s.field}><Text style={s.fieldLabel}>{label}</Text><TextInput accessibilityLabel={label} value={numeric ? (value ? formatThousands(value) : '') : value} onChangeText={handleChange} placeholder={placeholder ?? (numeric ? '0' : undefined)} placeholderTextColor="#A0A995" keyboardType={numeric ? 'numeric' : decimal ? 'decimal-pad' : 'default'} autoCapitalize={secret || multiline || label.toLowerCase().includes('email') ? 'none' : 'sentences'} autoCorrect={!multiline && !secret} spellCheck={!multiline && !secret} secureTextEntry={secret} multiline={multiline} style={[s.input, multiline && {height: 120, textAlignVertical: 'top'}]} /></View>;
 }
 function SectionHead({title, action, onPress}: {title: string; action?: string; onPress?: () => void}) {
   return (
     <View style={s.between}>
       <Text style={s.heading}>{title}</Text>
       {action && (
-        <AnimatedPressable accessibilityRole="button" onPress={onPress} hitSlop={12} scaleTo={0.92}>
+        <AnimatedPressable accessibilityRole="button" onPress={onPress} hitSlop={12}>
           <Text style={[s.mini, {color: c.ink, fontWeight: '600'}]}>{action}  ↗</Text>
         </AnimatedPressable>
       )}
@@ -198,15 +148,143 @@ function Chip({label, active, onPress}: {label: string; active: boolean; onPress
       accessibilityLabel={label}
       accessibilityState={{selected: active}}
       onPress={() => {
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        layoutSpring();
         onPress();
       }}
-      scaleTo={0.93}
-      style={[s.tab, active && s.tabActive]}
+      style={s.tab}
     >
+      <FadeBg on={active} color={c.lime} radius={22} />
       <Text style={[s.actionLabel, active && {color: c.ink, fontWeight: 'bold'}]}>{label}</Text>
     </AnimatedPressable>
   );
+}
+
+function TinyButton({label, onPress}: {label: string; onPress: (event: GestureResponderEvent) => void}) {
+  return <AnimatedPressable accessibilityLabel={label} onPress={onPress} style={s.tinyButton}><Text style={s.actionLabel}>{label}</Text></AnimatedPressable>;
+}
+type ToastMessage = {id: number; text: string; tone: 'success' | 'error'};
+/** Toasts appear with pattern 9 (blur 8 px → 0, opacity, scale 0.96 → 1, slight rise) and leave with pattern 3. */
+function Toast({toast, bottom, onClose}: {toast: ToastMessage | null; bottom: number; onClose: () => void}) {
+  const reducedNow = useReducedMotion();
+  const anim = useRef(new Animated.Value(0)).current;
+  const rise = useRef(new Animated.Value(1)).current;
+  const veil = useVeil();
+  const [shown, setShown] = useState<ToastMessage | null>(null);
+  useEffect(() => {
+    if (toast) {
+      setShown(toast);
+      anim.stopAnimation(); anim.setValue(0); rise.setValue(1);
+      if (isReducedMotion()) {rise.setValue(0); fade(anim, 1).start(); return;}
+      veil.enter();
+      spring(anim, 1).start();
+      spring(rise, 0).start();
+    } else {
+      veil.leave();
+      (isReducedMotion() ? fade(anim, 0) : exit(anim, 0, T.close)).start(({finished}) => {if (finished) setShown(null);});
+    }
+  }, [toast]);
+  if (!shown) return null;
+  return (
+    <Animated.View pointerEvents="box-none" style={[s.toastWrap, {bottom, opacity: anim, transform: reducedNow ? [] : [{translateY: rise.interpolate({inputRange: [0, 1], outputRange: [0, 10]})}, {scale: anim.interpolate({inputRange: [0, 1], outputRange: [0.96, 1]})}]}]}>
+      <View style={{maxWidth: '100%', borderRadius: 16, backgroundColor: '#20281F', shadowColor: '#000', shadowOffset: {width: 0, height: 12}, shadowOpacity: .2, shadowRadius: 18, elevation: 10}}>
+        <Veiled veil={veil} bg="#20281F" radius={16} tint="dark">
+          <View accessibilityRole="alert" accessibilityLiveRegion="polite" style={[s.toast, {shadowOpacity: 0, elevation: 0}]}>
+            <PopIn trigger={shown.id}><Icon name={shown.tone === 'error' ? 'alert-circle' : 'check-circle'} size={18} color={shown.tone === 'error' ? '#F0A58F' : c.lime} /></PopIn>
+            <Text style={s.toastText}>{shown.text}</Text>
+            <AnimatedPressable accessibilityRole="button" accessibilityLabel="Tutup pesan" hitSlop={12} onPress={onClose}><Icon name="x" size={16} color="#C5D1B6" /></AnimatedPressable>
+          </View>
+        </Veiled>
+      </View>
+    </Animated.View>
+  );
+}
+
+type NavAction = 'expense' | 'income' | 'check';
+const NAV_TABS = [{key: 'home', icon: 'home', label: 'Beranda'}, {key: 'needs', icon: 'layers', label: 'Kebutuhan'}, {key: 'plus', icon: 'plus', label: 'Tambah transaksi'}, {key: 'calendar', icon: 'calendar', label: 'Kalender'}, {key: 'insights', icon: 'bar-chart-2', label: 'Statistik'}] as const;
+const NAV_ACTIONS: {key: NavAction; icon: IconName; label: string}[] = [{key: 'expense', icon: 'arrow-up-right', label: 'Uang keluar'}, {key: 'income', icon: 'arrow-down-left', label: 'Uang masuk'}, {key: 'check', icon: 'search', label: 'Cek sebelum beli'}];
+const NAV_CLOSED_WIDTH = 260;
+
+/** Tab icon whose colour cross-fades (200 ms) between inactive and active. */
+function NavIcon({name, active}: {name: IconName; active: boolean}) {
+  const v = useRef(new Animated.Value(active ? 1 : 0)).current;
+  useEffect(() => {Animated.timing(v, {toValue: active ? 1 : 0, duration: isReducedMotion() ? T.reduced : T.fade, useNativeDriver: true}).start();}, [active]);
+  return <View>
+    <Animated.View style={{opacity: v.interpolate({inputRange: [0, 1], outputRange: [1, 0]})}}><Icon name={name} color="#B3BAA9" size={21} /></Animated.View>
+    <Animated.View style={[StyleSheet.absoluteFill, {opacity: v}]}><Icon name={name} color={c.lime} size={21} /></Animated.View>
+  </View>;
+}
+
+/**
+ * Floating bottom nav. The active pill slides between tabs (pattern 6). Tapping "+" MORPHS the pill
+ * (width spring, content cross-blur) into [× tutup] [Uang keluar] [Uang masuk] [Cek sebelum beli] and back (pattern 1).
+ */
+function MorphNav({tab, bottom, onTab, onAction, homeRef}: {tab: Tab; bottom: number; onTab: (tab: Tab) => void; onAction: (action: NavAction) => void; homeRef: React.RefObject<View | null>}) {
+  const reducedNow = useReducedMotion();
+  const {width: windowWidth} = useWindowDimensions();
+  const openWidth = Math.max(NAV_CLOSED_WIDTH, Math.min(windowWidth - 40, 380));
+  const [open, setOpen] = useState(false);
+  const navW = useRef(new Animated.Value(NAV_CLOSED_WIDTH)).current; // JS-driven (layout)
+  const tabsP = useRef(new Animated.Value(1)).current; // native
+  const actionsP = useRef(new Animated.Value(0)).current; // native
+  const veil = useVeil();
+  const navTarget = useRef<View>(null);
+  const [slots, setSlots] = useState<Partial<Record<Tab, number>>>({});
+  const indicatorX = useRef(new Animated.Value(0)).current;
+  const indicatorShown = useRef(new Animated.Value(0)).current;
+  const indicatorPlaced = useRef(false);
+  const slot = slots[tab];
+  useEffect(() => {
+    if (slot === undefined) return;
+    if (!indicatorPlaced.current || isReducedMotion()) {indicatorX.setValue(slot); indicatorPlaced.current = true; Animated.timing(indicatorShown, {toValue: 1, duration: T.fade, useNativeDriver: true}).start(); return;}
+    spring(indicatorX, slot).start();
+  }, [slot]);
+  function toggle(next: boolean) {
+    if (next === open) return;
+    setOpen(next);
+    const [leaving, coming] = next ? [tabsP, actionsP] : [actionsP, tabsP];
+    leaving.stopAnimation(); coming.stopAnimation(); navW.stopAnimation();
+    if (isReducedMotion()) {
+      navW.setValue(next ? openWidth : NAV_CLOSED_WIDTH);
+      fade(leaving, 0).start(); fade(coming, 1).start();
+      return;
+    }
+    veil.pulse();
+    spring(navW, next ? openWidth : NAV_CLOSED_WIDTH, {native: false}).start();
+    exit(leaving, 0, T.exit).start();
+    spring(coming, 1, {delay: T.enterDelay}).start();
+  }
+  useEffect(() => {
+    if (!open) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {toggle(false); return true;});
+    return () => sub.remove();
+  }, [open]);
+  const pillLeft = Animated.multiply(Animated.subtract(openWidth, navW), 0.5);
+  const groupStyle = (p: Animated.Value) => ({opacity: p, transform: reducedNow ? [] : [{translateY: p.interpolate({inputRange: [0, 1], outputRange: [6, 0]})}, {scale: p.interpolate({inputRange: [0, 1], outputRange: [0.94, 1]})}]});
+  const pill = {position: 'absolute' as const, top: 0, height: 60, left: pillLeft, width: navW, borderRadius: 30};
+  return <View pointerEvents="box-none" style={[s.navWrap, {bottom}]}>
+    <View style={{width: openWidth, height: 60}}>
+      <Animated.View pointerEvents="none" style={[pill, {backgroundColor: c.ink, shadowColor: '#000', shadowOffset: {width: 0, height: 6}, shadowOpacity: .25, shadowRadius: 12, elevation: 8}]} />
+      <BlurTarget ref={navTarget} pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+        <Animated.View pointerEvents="none" style={[pill, {backgroundColor: c.ink}]} />
+        <Animated.View pointerEvents={open ? 'none' : 'box-none'} accessibilityElementsHidden={open} importantForAccessibility={open ? 'no-hide-descendants' : 'auto'} style={[{position: 'absolute', top: 0, height: 60, left: (openWidth - NAV_CLOSED_WIDTH) / 2, width: NAV_CLOSED_WIDTH, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'}, groupStyle(tabsP)]}>
+          <Animated.View pointerEvents="none" style={{position: 'absolute', top: 10, left: 0, width: 40, height: 40, borderRadius: 20, backgroundColor: '#363C30', opacity: indicatorShown, transform: [{translateX: indicatorX}]}} />
+          {NAV_TABS.map(item => item.key === 'plus'
+            ? <AnimatedPressable key={item.key} accessibilityRole="button" accessibilityLabel={item.label} accessibilityState={{expanded: open}} onPress={() => toggle(true)} style={s.navPlus}><Icon name="plus" color={c.ink} size={21} /></AnimatedPressable>
+            : <View key={item.key} ref={item.key === 'home' ? homeRef : undefined} collapsable={false} onLayout={(e: LayoutChangeEvent) => {const x = e.nativeEvent.layout.x; setSlots(prev => prev[item.key] === x ? prev : {...prev, [item.key]: x});}}>
+                <AnimatedPressable accessibilityRole="button" accessibilityLabel={item.label} accessibilityState={{selected: tab === item.key}} onPress={() => onTab(item.key)} style={s.navItem}><NavIcon name={item.icon} active={tab === item.key} /></AnimatedPressable>
+              </View>)}
+        </Animated.View>
+        <Animated.View pointerEvents={open ? 'box-none' : 'none'} accessibilityElementsHidden={!open} importantForAccessibility={open ? 'auto' : 'no-hide-descendants'} style={[{position: 'absolute', top: 0, height: 60, left: 0, width: openWidth, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 4}, groupStyle(actionsP)]}>
+          <PopIn trigger={open}><AnimatedPressable accessibilityRole="button" accessibilityLabel="Tutup pilihan transaksi" onPress={() => toggle(false)} style={s.navPlus}><Icon name="x" color={c.ink} size={21} /></AnimatedPressable></PopIn>
+          {NAV_ACTIONS.map(action => <AnimatedPressable key={action.key} accessibilityRole="button" accessibilityLabel={action.label} onPress={() => {toggle(false); onAction(action.key);}} style={{flex: 1, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', gap: 3}}>
+            <Icon name={action.icon} color={c.lime} size={18} />
+            <Text numberOfLines={1} style={{fontFamily: 'DMMedium', fontSize: 10, color: c.white}}>{action.label}</Text>
+          </AnimatedPressable>)}
+        </Animated.View>
+      </BlurTarget>
+      {veil.active ? <Animated.View pointerEvents="none" style={[pill, {overflow: 'hidden'}]}><BlurLayer veil={veil} target={navTarget} tint="dark" /></Animated.View> : null}
+    </View>
+  </View>;
 }
 
 export default function App() {
@@ -219,7 +297,12 @@ function DanaSiap() {
   const insets = useSafeAreaInsets();
   const [state, setState] = useState<AppState>(defaultState());
   const current = useRef(state);
-  const tabAnim = useRef(new Animated.Value(1)).current;
+  // Motion: screen blur veil for tab swaps, fly-to-Uang-Sisa targets, and the held pot value while a chip flies.
+  const screenVeil = useVeil();
+  const leftoverRef = useRef<View>(null);
+  const homeNavRef = useRef<View>(null);
+  const potPop = useRef(new Animated.Value(1)).current;
+  const [heldPot, setHeldPot] = useState<number | null>(null);
   const [cardSize, setCardSize] = useState(() => ({
     width: Math.max(300, Dimensions.get('window').width - 44),
     height: 240,
@@ -241,7 +324,7 @@ function DanaSiap() {
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [allocatedInput, setAllocatedInput] = useState('0');
   const [form, setForm] = useState({title: '', amount: '', date: today, category: 'Makan', kind: 'recurring', interval: '7', saved: '0', priority: 'essential'});
-  const [profile, setProfile] = useState({name: '', dailyIncome: '', dailyBudget: '', openingBalance: '', workDays: [1, 2, 3, 4, 5, 6] as number[], activityAllowance: '', payrollCycle: 'daily' as 'daily' | 'monthly', payday: '5', avatarUrl: undefined as string | undefined});
+  const [profile, setProfile] = useState({name: '', dailyIncome: '', periodStartDay: '1', openingBalance: '', workDays: [1, 2, 3, 4, 5, 6] as number[], activityAllowance: '', payrollCycle: 'daily' as 'daily' | 'monthly', payday: '5', avatarUrl: undefined as string | undefined, working: true});
   const [attStatus, setAttStatus] = useState<Attendance['status']>('present');
   const [attIncome, setAttIncome] = useState('');
   const [attAllowance, setAttAllowance] = useState('');
@@ -255,6 +338,32 @@ function DanaSiap() {
   const [backupPreview, setBackupPreview] = useState<{name: string; txCount: number; needsCount: number; validState: AppState} | null>(null);
   const { height: windowHeight } = useWindowDimensions();
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [dailyDraft, setDailyDraft] = useState<DailyDraft[]>([]);
+  const [showBreakdown, setShowBreakdown] = useState(false);
+  const [leftoverTarget, setLeftoverTarget] = useState<{itemId: string; date: string} | null>(null);
+  const [leftoverInput, setLeftoverInput] = useState('');
+  const [checkAmount, setCheckAmount] = useState('');
+  const [useLeftover, setUseLeftover] = useState<boolean | null>(null);
+  const [forNextPeriod, setForNextPeriod] = useState(false);
+  const [shopDraft, setShopDraft] = useState<ShopDraft[]>([]);
+  const [shopDueDay, setShopDueDay] = useState('1');
+  const [shopMode, setShopMode] = useState<'edit' | 'buy'>('edit');
+  const [tokenAmount, setTokenAmount] = useState('');
+  const [tokenKwh, setTokenKwh] = useState('');
+  const [meterKwh, setMeterKwh] = useState('');
+  const [elecBudget, setElecBudget] = useState('');
+  const [elecPower, setElecPower] = useState<number | undefined>(undefined);
+  const [skipItem, setSkipItem] = useState('');
+  const [skipFrom, setSkipFrom] = useState('');
+  const [skipTo, setSkipTo] = useState('');
+  const notify = (text: string, tone: ToastMessage['tone'] = 'success') => setToast({id: Date.now(), text, tone});
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), toast.tone === 'error' ? 4000 : 2800);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', e => {
@@ -273,9 +382,14 @@ function DanaSiap() {
   const projection = useMemo(() => forecast(state, {asOf: today, horizonDays: period}), [state, today, period]);
   const absence = useMemo(() => forecast(state, {asOf: today, horizonDays: period, absentDates: [selectedDay]}), [state, today, period, selectedDay]);
   const payroll = useMemo(() => calculatePayroll(state, today), [state, today]);
+  const budget = useMemo(() => periodBudget(state, today), [state, today]);
+  const history = useMemo(() => periodHistory(state, today), [state, today]);
+  const electricity = useMemo(() => electricityEstimate(state, today), [state, today]);
   const activeNeeds = [...state.needs].filter(n => !n.paid).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const todayAttendance = state.attendance.find(a => a.date === today);
   const todayIsWorkday = isWorkday(state, today);
+  // People without a job never see attendance, payroll or workday settings.
+  const working = state.profile.working !== false;
 
   useEffect(() => {
     loadPlan().then(plan => {if (plan) {setState(plan.state); current.current = plan.state; setDemo(plan.demo); setReminders(plan.reminders); setStarted(true);}}).catch(() => setStorageError('Data lokal belum bisa dibaca. Jangan menimpa data; tutup lalu buka lagi aplikasi.')).finally(() => setLoaded(true));
@@ -285,6 +399,11 @@ function DanaSiap() {
     return () => {subscription.remove(); unsubscribe?.();};
   }, []);
   useEffect(() => {
+    // Workdays count as present and daily items as spent automatically; only exceptions need a tap.
+    if (!started || demo) return;
+    try {const next = applyAutomations(current.current, today); if (next !== current.current) persist(next);} catch {}
+  }, [started, demo, today, state]);
+  useEffect(() => {
     if (!started) return;
     scheduleReminders(state, reminders && !demo).catch(() => setStorageError('Pengingat belum berhasil diperbarui. Buka pengaturan lalu aktifkan kembali.'));
   }, [state, reminders, demo, started]);
@@ -293,19 +412,21 @@ function DanaSiap() {
     try {
       const payload = JSON.stringify({version: 1, state}, null, 2);
       await Clipboard.setStringAsync(payload);
-      Alert.alert('Cadangan Disalin', 'Seluruh data cadangan JSON berhasil disalin ke clipboard perangkat.');
+      notify('Cadangan JSON disalin ke clipboard.');
     } catch {
-      Alert.alert('Gagal Menyalin', 'Tidak dapat mengakses clipboard perangkat.');
+      notify('Gagal menyalin. Clipboard perangkat tidak bisa diakses.', 'error');
     }
   }
 
   async function shareBackupJson() {
+    let copied = false;
     try {
       const payload = JSON.stringify({version: 1, state}, null, 2);
       try {
         await Clipboard.setStringAsync(payload);
+        copied = true;
       } catch {}
-      await Share.share(
+      const result = await Share.share(
         {
           message: payload,
           title: 'Cadangan DanaSiap',
@@ -314,8 +435,9 @@ function DanaSiap() {
           dialogTitle: 'Bagikan Cadangan DanaSiap',
         }
       );
+      if (result.action === Share.sharedAction) notify(copied ? 'Cadangan siap dibagikan, juga disalin ke clipboard.' : 'Cadangan siap dibagikan.');
     } catch {
-      Alert.alert('Cadangan Tersalin', 'Cadangan JSON telah disalin ke clipboard agar tetap dapat disimpan secara manual.');
+      notify(copied ? 'Gagal membuka menu bagikan. Cadangan tetap disalin ke clipboard.' : 'Gagal membagikan cadangan. Coba lagi.', 'error');
     }
   }
 
@@ -329,10 +451,16 @@ function DanaSiap() {
   function open(next: Sheet) {
     setFormError(''); setCloudMessage(''); setSheet(next);
     if (next === 'expense' || next === 'income' || next === 'need') setForm({title: '', amount: '', date: today, category: 'Makan', kind: 'recurring', interval: '7', saved: '', priority: 'essential'});
-    if (next === 'setup') setProfile({name: state.profile.name, dailyIncome: state.profile.dailyIncome ? formatThousands(state.profile.dailyIncome) : '', dailyBudget: state.profile.dailyBudget ? formatThousands(state.profile.dailyBudget) : '', openingBalance: state.profile.openingBalance ? formatThousands(state.profile.openingBalance) : '', workDays: [...state.profile.workDays], activityAllowance: state.profile.activityAllowance ? formatThousands(state.profile.activityAllowance) : '', payrollCycle: state.profile.payrollCycle ?? 'daily', payday: String(state.profile.payday ?? 5), avatarUrl: state.profile.avatarUrl});
+    if (next === 'setup') setProfile({name: state.profile.name, dailyIncome: state.profile.dailyIncome ? formatThousands(state.profile.dailyIncome) : '', periodStartDay: String(state.profile.periodStartDay ?? 1), openingBalance: state.profile.openingBalance ? formatThousands(state.profile.openingBalance) : '', workDays: [...state.profile.workDays], activityAllowance: state.profile.activityAllowance ? formatThousands(state.profile.activityAllowance) : '', payrollCycle: state.profile.payrollCycle ?? 'daily', payday: String(state.profile.payday ?? 5), avatarUrl: state.profile.avatarUrl, working: state.profile.working !== false});
+    if (next === 'expense' || next === 'income') {setUseLeftover(null); setForNextPeriod(false);}
+    if (next === 'setup') setDailyDraft((state.dailyItems ?? migrateDailyBudget(state, today).dailyItems ?? []).map(item => ({id: item.id, title: item.title, amount: formatThousands(item.amount), days: [...item.days], skipHolidays: item.skipHolidays})));
+    if (next === 'check') setCheckAmount('');
+    if (next === 'shopping') {setShopMode('edit'); setShopDraft((state.shopping?.items ?? []).map(item => ({id: item.id, name: item.name, qty: String(item.qty).replace('.', ','), price: formatThousands(item.price), skip: Boolean(item.skip), bought: false, image: item.image}))); setShopDueDay(String(state.shopping?.dueDay ?? state.profile.periodStartDay ?? 1));}
+    if (next === 'token') {setTokenAmount(electricity.typicalAmount ? formatThousands(electricity.typicalAmount) : ''); setTokenKwh(''); setMeterKwh(''); setElecBudget(state.electricity?.monthlyBudget ? formatThousands(state.electricity.monthlyBudget) : ''); setElecPower(state.electricity?.power);}
     if (next === 'attendance') {
       const existing = state.attendance.find(a => a.date === selectedDay);
-      const defaultStatus = existing?.status ?? (isWorkday(state, selectedDay) ? 'present' : 'holiday');
+      // An automatic "present" is usually opened to report an absence.
+      const defaultStatus = existing?.auto ? 'absent' : existing?.status ?? (isWorkday(state, selectedDay) ? 'present' : 'holiday');
       setAttStatus(defaultStatus);
       const inc = existing?.income ?? (defaultStatus === 'half' ? state.profile.dailyIncome : defaultStatus === 'present' ? state.profile.dailyIncome : 0);
       setAttIncome(formatThousands(inc));
@@ -362,28 +490,98 @@ function DanaSiap() {
   }
   function startDemo() {
     const sample = demoState(today); setDemo(true); setReminders(false); persist(sample, true, false); setStarted(true);
+    notify('Mode data contoh aktif. Data ini bukan saldo pribadimu.');
+  }
+  /** How much of an expense comes from the "uang sisa" pot, plus a hint about its effect on the allowance. */
+  function leftoverPlan(amount: number) {
+    const pot = Math.max(0, budget.leftoverPot);
+    const available = pot > 0 && form.date >= budget.start && form.date <= today;
+    if (!Number.isSafeInteger(amount) || amount <= 0) return {available, on: available && Boolean(useLeftover), from: 0, hint: ''};
+    const over = form.date === today && amount > Math.max(0, budget.leftToday);
+    const on = available && (useLeftover ?? over);
+    const from = !on ? 0 : useLeftover === null ? checkPurchase(budget, amount).fromLeftover : Math.min(pot, amount);
+    const rest = amount - from;
+    const freeAfter = budget.freeMoney - rest;
+    const hint = form.date !== today ? '' : freeAfter < 0 ? `Uang wajib jadi kurang ${currency(-freeAfter)}.` : rest > Math.max(0, budget.leftToday) ? `Jatah jajan jadi ${currency(budget.daysLeft > 1 ? Math.floor(freeAfter / (budget.daysLeft - 1)) : 0)}/hari sampai ${shortDate(budget.end)}.` : from > 0 ? `${rest > 0 ? `${currency(rest)} dari jatah hari ini + ` : ''}${currency(from)} dari Uang Sisa (Uang Sisa tinggal ${currency(pot - from)}).` : 'Masih masuk jatah jajan hari ini.';
+    return {available, on, from, hint};
+  }
+  function act(action: FinancialAction, message: string) {
+    try {persist(reducer(current.current, action)); setFormError(''); notify(message); return true;} catch (error) {notify(error instanceof Error ? error.message : 'Belum berhasil. Coba lagi.', 'error'); return false;}
   }
   function saveForm() {
     if (!form.title.trim()) {setFormError('Tulis nama transaksi atau kebutuhan dulu.'); return;}
     const amount = number(form.amount);
     if (!Number.isSafeInteger(amount) || amount <= 0) {setFormError('Nominal harus berupa rupiah bulat, lebih dari nol.'); return;}
+    const title = form.title.trim();
     if (sheet === 'need') {
-      if (dispatch({type: 'need/add', need: {id: uid(), title: form.title.trim(), amount, saved: number(form.saved || '0'), dueDate: form.date, kind: form.kind as Need['kind'], ...(form.kind === 'recurring' ? {intervalDays: number(form.interval)} : {}), priority: form.priority as Need['priority']}})) setSheet(null);
+      if (dispatch({type: 'need/add', need: {id: uid(), title, amount, saved: number(form.saved || '0'), dueDate: form.date, kind: form.kind as Need['kind'], ...(form.kind === 'recurring' ? {intervalDays: number(form.interval)} : {}), priority: form.priority as Need['priority']}})) {
+        setSheet(null);
+        notify(`Rencana ${title} tersimpan untuk ${shortDate(form.date)}.`);
+      }
     } else {
-      if (dispatch({type: 'transaction/add', transaction: {id: uid(), title: form.title.trim(), amount, date: form.date, category: sheet === 'income' ? 'Pemasukan lain' : form.category, type: sheet === 'income' ? 'income' : 'expense'}})) setSheet(null);
+      const income = sheet === 'income';
+      const fromLeftover = income ? 0 : leftoverPlan(amount).from;
+      const effectiveDate = income && forNextPeriod && budget.daysLeft <= 3 ? addDays(budget.end, 1) : undefined;
+      if (dispatch({type: 'transaction/add', transaction: {id: uid(), title, amount, date: form.date, category: income ? 'Pemasukan lain' : form.category, type: income ? 'income' : 'expense', ...(fromLeftover > 0 ? {fromLeftover} : {}), ...(effectiveDate ? {effectiveDate} : {})}})) {
+        setSheet(null);
+        notify(`${income ? 'Uang masuk' : 'Uang keluar'} ${currency(amount)} tersimpan · ${title}.${fromLeftover > 0 ? ` ${currency(fromLeftover)} diambil dari Uang Sisa.` : ''}${effectiveDate ? ` Dihitung mulai ${shortDate(effectiveDate)}.` : ''}`);
+      }
     }
   }
   function saveProfile() {
     if (!profile.name.trim()) {setFormError('Isi nama panggilanmu.'); return;}
-    const dailyIncome = number(profile.dailyIncome || '0'), dailyBudget = number(profile.dailyBudget || '0'), openingBalance = number(profile.openingBalance || '0'), activityAllowance = number(profile.activityAllowance || '0'), payday = number(profile.payday || '5');
-    if (![dailyIncome, dailyBudget, openingBalance, activityAllowance, payday].every(v => Number.isSafeInteger(v) && v >= 0)) {setFormError('Nominal harus rupiah bulat dan tidak negatif.'); return;}
-    if (dispatch({type: 'profile/update', profile: {...profile, name: profile.name.trim(), dailyIncome, dailyBudget, openingBalance, activityAllowance, payrollCycle: profile.payrollCycle, payday, avatarUrl: profile.avatarUrl}})) {setStarted(true); setSheet(null);}
+    const dailyIncome = number(profile.dailyIncome || '0'), openingBalance = number(profile.openingBalance || '0'), activityAllowance = number(profile.activityAllowance || '0'), payday = number(profile.payday || '5'), periodStartDay = number(profile.periodStartDay || '1');
+    if (![dailyIncome, openingBalance, activityAllowance, payday].every(v => Number.isSafeInteger(v) && v >= 0)) {setFormError('Nominal harus rupiah bulat dan tidak negatif.'); return;}
+    if (periodStartDay < 1 || periodStartDay > 28) {setFormError('Tanggal mulai sebulan harus antara 1 dan 28.'); return;}
+    const items: DailyItem[] = [];
+    for (const draft of dailyDraft) {
+      if (!draft.title.trim() && !draft.amount) continue;
+      const amount = number(draft.amount);
+      if (!draft.title.trim()) {setFormError('Tulis nama setiap pengeluaran harian.'); return;}
+      if (amount <= 0) {setFormError(`Isi nominal per hari untuk ${draft.title.trim()}.`); return;}
+      if (!draft.days.length) {setFormError(`Pilih minimal satu hari untuk ${draft.title.trim()}.`); return;}
+      items.push({id: draft.id, title: draft.title.trim(), amount, days: draft.days, skipHolidays: draft.skipHolidays, since: today});
+    }
+    const {name, workDays, payrollCycle, avatarUrl, working: isWorking} = profile;
+    try {
+      // The stored legacy daily budget is left untouched; old data is migrated before the new list replaces it.
+      const base = current.current.dailyItems === undefined ? migrateDailyBudget(current.current, today) : current.current;
+      const withProfile = reducer(base, {type: 'profile/update', profile: {name: name.trim(), workDays, dailyIncome, openingBalance, activityAllowance, payrollCycle, payday, avatarUrl, working: isWorking, periodStartDay}});
+      persist(reducer(withProfile, {type: 'daily/set', items: items.map(({since, ...item}) => item)}));
+      setFormError('');
+    } catch (error) {setFormError(error instanceof Error ? error.message : 'Periksa kembali isianmu.'); return;}
+    notify(started ? 'Pengaturan tersimpan. Prediksi sudah diperbarui.' : `Halo, ${name.trim()}! Rencanamu siap dipakai.`);
+    setStarted(true); setSheet(null);
   }
+  // Product photos are cropped square and shrunk to about 200px so the list stays small for cloud sync.
+  async function pickShopImage(id: string, source: 'camera' | 'library') {
+    try {
+      const permission = source === 'camera' ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {notify(source === 'camera' ? 'Izin kamera belum aktif. Izinkan di pengaturan Android.' : 'Izin galeri belum aktif. Izinkan akses foto di pengaturan Android.', 'error'); return;}
+      const options: ImagePicker.ImagePickerOptions = {mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 1};
+      const result = source === 'camera' ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options);
+      if (result.canceled || !result.assets?.length) return;
+      for (const compress of [0.7, 0.5, 0.35]) {
+        const small = await manipulateAsync(result.assets[0].uri, [{resize: {width: 200, height: 200}}], {compress, format: SaveFormat.JPEG, base64: true});
+        const image = `data:image/jpeg;base64,${small.base64}`;
+        if (small.base64 && image.length <= MAX_ITEM_IMAGE) {editShop(id, {image}); return;}
+      }
+      notify('Foto terlalu besar. Coba foto lain.', 'error');
+    } catch {
+      notify('Foto belum bisa diambil. Coba lagi.', 'error');
+    }
+  }
+  function chooseShopImage(id: string) {
+    showDialog('Foto barang', 'Ambil foto dari mana?', [{text: 'Batal', style: 'cancel'}, {text: 'Galeri', onPress: () => pickShopImage(id, 'library')}, {text: 'Kamera', onPress: () => pickShopImage(id, 'camera')}]);
+  }
+  function editShop(id: string, changes: Partial<ShopDraft>) { setShopDraft(list => list.map(d => d.id === id ? {...d, ...changes} : d)); }
+  const shopLine = (item: ShopDraft) => {const qty = decimal(item.qty || '1'); return qty > 0 ? Math.round(qty * number(item.price || '0')) : 0;};
+  function editDaily(id: string, changes: Partial<DailyDraft>) { setDailyDraft(list => list.map(d => d.id === id ? {...d, ...changes} : d)); }
   async function pickAvatar() {
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Izin Galeri Diperlukan', 'Buka pengaturan perangkat untuk mengizinkan akses galeri foto.');
+        notify('Izin galeri belum aktif. Izinkan akses foto di pengaturan Android.', 'error');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -404,19 +602,19 @@ function DanaSiap() {
         }
         if (dataUrl) {
           if (dataUrl.length > 500_000) {
-            Alert.alert('Ukuran Foto Terlalu Besar', 'Silakan pilih foto lain atau gunakan resolusi lebih kecil.');
+            notify('Ukuran foto terlalu besar. Pilih foto lain atau resolusi lebih kecil.', 'error');
             return;
           }
-          dispatch({type: 'profile/update', profile: {avatarUrl: dataUrl}});
+          if (dispatch({type: 'profile/update', profile: {avatarUrl: dataUrl}})) notify('Foto profil diperbarui.');
           setProfile(p => ({...p, avatarUrl: dataUrl}));
         }
       }
     } catch (err) {
-      Alert.alert('Gagal Memilih Foto', err instanceof Error ? err.message : 'Terjadi kesalahan saat memilih foto.');
+      notify(err instanceof Error ? `Gagal memilih foto: ${err.message}` : 'Gagal memilih foto. Coba lagi.', 'error');
     }
   }
   function removeAvatar() {
-    dispatch({type: 'profile/update', profile: {avatarUrl: undefined}});
+    if (dispatch({type: 'profile/update', profile: {avatarUrl: undefined}})) notify('Foto profil dihapus.');
     setProfile(p => ({...p, avatarUrl: undefined}));
   }
   function recordAttendance() {
@@ -431,25 +629,132 @@ function DanaSiap() {
       }
       allowance = allNum;
     }
-    if (dispatch({type: 'attendance/record', attendance: {date: selectedDay, status: attStatus, income, allowance}})) setSheet(null);
+    const existed = state.attendance.some(a => a.date === selectedDay);
+    if (dispatch({type: 'attendance/record', attendance: {date: selectedDay, status: attStatus, income, allowance}})) {
+      setSheet(null);
+      const label = {present: 'Masuk kerja', absent: 'Tidak masuk', half: 'Setengah hari', holiday: 'Libur'}[attStatus];
+      const detail = income > 0 ? `${label} +${currency(income)}` : label;
+      notify(selectedDay > today ? `Rencana kehadiran ${shortDate(selectedDay)} tersimpan · ${label}.` : `Absen ${shortDate(selectedDay)} ${existed ? 'diperbarui' : 'tersimpan'} · ${detail}.`);
+    }
   }
   function confirmPay(need: Need) {
-    Alert.alert(`Bayar ${need.title}?`, `${currency(remainingAmount(need))} akan dicatat sebagai pengeluaran hari ini.${need.kind === 'recurring' ? ' Jadwal berikutnya dihitung dari tanggal pembayaran.' : ''}`, [{text: 'Batal', style: 'cancel'}, {text: 'Ya, sudah dibayar', onPress: () => {if (dispatch({type: 'need/pay', id: need.id, date: today})) setEditingNeed(null);}}]);
+    const amount = remainingAmount(need);
+    showDialog(`Bayar ${need.title}?`, `${currency(amount)} akan dicatat sebagai pengeluaran hari ini.${need.kind === 'recurring' ? ' Jadwal berikutnya dihitung dari tanggal pembayaran.' : ''}`, [{text: 'Batal', style: 'cancel'}, {text: 'Ya, sudah dibayar', onPress: () => {if (dispatch({type: 'need/pay', id: need.id, date: today})) {setEditingNeed(null); notify(`${need.title} dibayar · ${currency(amount)} dicatat sebagai pengeluaran.`);} else notify('Pembayaran belum tercatat. Periksa lagi rencananya.', 'error');}}]);
   }
-  async function runCloud(task: () => Promise<void>) {setBusy(true); setCloudMessage(''); try {await task();} catch (error) {setCloudMessage(error instanceof Error ? error.message : 'Koneksi belum berhasil. Coba lagi nanti.');} finally {setBusy(false);}}
+  function payNeed(need: Need) {
+    // Shopping and electricity needs are paid through their own flows so the real amount is recorded.
+    if (isShoppingNeed(need) || isElectricityNeed(need)) {
+      setEditingNeed(null);
+      setTimeout(() => {if (isShoppingNeed(need)) openShopping('buy'); else open('token');}, 250);
+    } else confirmPay(need);
+  }
+  function dailyLeftoverOf(itemId: string, date: string) { return (state.leftovers ?? []).find(l => l.id === `sisa:${itemId}:${date}`)?.amount ?? 0; }
+  function markDaily(item: DailyItem, date: string, amount: number, event?: GestureResponderEvent) {
+    const label = date === today ? 'hari ini' : shortDate(date);
+    const before = current.current;
+    if (act({type: 'daily/leftover', itemId: item.id, date, amount}, amount === 0 ? `${item.title} ${label} kembali dihitung terpakai.` : amount === item.amount ? `${item.title} ${label} nggak dipakai · +${currency(amount)} ke Uang Sisa.` : `Sisa ${item.title} ${label} ${currency(amount)} masuk Uang Sisa.`)) sendToLeftover(pointOf(event), before);
+  }
+  function openDailyLeftover(item: DailyItem, date: string) {
+    const existing = dailyLeftoverOf(item.id, date);
+    setLeftoverTarget({itemId: item.id, date}); setLeftoverInput(existing ? formatThousands(existing) : ''); open('daily');
+  }
+  function saveDailyLeftover(event?: GestureResponderEvent) {
+    const item = (state.dailyItems ?? []).find(i => i.id === leftoverTarget?.itemId);
+    if (!item || !leftoverTarget) return;
+    const amount = number(leftoverInput || '0');
+    if (amount > item.amount) {setFormError(`Sisa maksimal ${currency(item.amount)}.`); return;}
+    const before = current.current;
+    if (dispatch({type: 'daily/leftover', itemId: item.id, date: leftoverTarget.date, amount})) {
+      setSheet(null);
+      sendToLeftover(pointOf(event), before, T.flyDelayAfterSheet);
+      notify(amount > 0 ? `Sisa ${item.title} ${currency(amount)} masuk Uang Sisa.` : `${item.title} dihitung terpakai penuh.`);
+    }
+  }
+  function openShopping(mode: 'edit' | 'buy') {
+    open('shopping');
+    setShopMode(mode);
+  }
+  function shoppingItemsFromDraft() {
+    const items = [];
+    for (const draft of shopDraft) {
+      if (!draft.name.trim() && !draft.price) continue;
+      const qty = decimal(draft.qty || '1');
+      if (!draft.name.trim()) {setFormError('Tulis nama setiap barang belanja.'); return null;}
+      if (!(qty > 0) || qty > 100_000) {setFormError(`Jumlah ${draft.name.trim()} harus lebih dari 0.`); return null;}
+      items.push({id: draft.id, name: draft.name.trim(), qty, price: number(draft.price || '0'), ...(draft.skip ? {skip: true} : {}), ...(draft.image ? {image: draft.image} : {})});
+    }
+    return items;
+  }
+  function saveShopping(thenBuy = false) {
+    const items = shoppingItemsFromDraft();
+    if (!items) return;
+    const dueDay = number(shopDueDay || '1');
+    if (dueDay < 1 || dueDay > 28) {setFormError('Tanggal belanja harus antara 1 dan 28.'); return;}
+    if (!dispatch({type: 'shopping/set', items, dueDay})) return;
+    if (thenBuy) {
+      if (!items.some(item => !item.skip)) {setFormError('Belum ada barang yang perlu dibeli.'); return;}
+      setShopDraft(items.map(item => ({id: item.id, name: item.name, qty: String(item.qty).replace('.', ','), price: formatThousands(item.price), skip: Boolean(item.skip), bought: false, image: item.image})));
+      setShopMode('buy');
+    } else {setSheet(null); notify(`Daftar belanja tersimpan · ${currency(shoppingTotal({items, dueDay}))}.`);}
+  }
+  function finishShopping(event?: GestureResponderEvent) {
+    const items = [];
+    for (const draft of shopDraft.filter(d => !d.skip)) {
+      const qty = decimal(draft.qty || '1');
+      if (draft.bought && (!(qty > 0) || qty > 100_000)) {setFormError(`Jumlah ${draft.name} harus lebih dari 0.`); return;}
+      items.push({id: draft.id, qty: qty > 0 ? qty : 1, price: number(draft.price || '0'), bought: draft.bought});
+    }
+    const active = state.needs.find(n => isShoppingNeed(n) && !n.paid);
+    const actual = items.filter(i => i.bought).reduce((sum, i) => sum + Math.round(i.qty * i.price), 0);
+    const planned = active ? remainingAmount(active) : actual;
+    const before = current.current;
+    if (dispatch({type: 'shopping/finish', id: `belanja:${uid()}`, date: today, items})) {
+      setSheet(null);
+      sendToLeftover(pointOf(event), before, T.flyDelayAfterSheet);
+      notify(planned > actual ? `Belanja ${currency(actual)} tercatat. Lebih hemat ${currency(planned - actual)}, masuk Uang Sisa.` : planned < actual ? `Belanja ${currency(actual)} tercatat, lebih ${currency(actual - planned)} dari rencana.` : `Belanja ${currency(actual)} tercatat, pas sesuai rencana.`);
+    }
+  }
+  function buyToken() {
+    const amount = number(tokenAmount || '0');
+    if (amount <= 0) {notify('Isi nominal token yang dibeli.', 'error'); return;}
+    const kwh = tokenKwh.trim() ? decimal(tokenKwh) : undefined;
+    if (kwh !== undefined && !(kwh > 0 && kwh <= 100_000)) {notify('kWh dari struk harus angka lebih dari 0.', 'error'); return;}
+    if (act({type: 'electricity/purchase', purchase: {id: uid(), date: today, amount, ...(kwh ? {kwh} : {})}}, `Beli token ${currency(amount)} tercatat${kwh ? ` · ${kwhText(kwh)} kWh` : ''}.`)) setTokenKwh('');
+  }
+  function saveMeter() {
+    const kwh = decimal(meterKwh);
+    if (!(kwh >= 0 && kwh <= 100_000)) {notify('Isi sisa kWh yang tampil di meteran.', 'error'); return;}
+    if (act({type: 'electricity/reading', reading: {date: today, kwh}}, `Meteran hari ini ${kwhText(kwh)} kWh tersimpan.`)) setMeterKwh('');
+  }
+  function saveElectricitySettings() {
+    const monthlyBudget = elecBudget ? number(elecBudget) : undefined;
+    act({type: 'electricity/settings', monthlyBudget: monthlyBudget || undefined, power: elecPower}, 'Pengaturan listrik tersimpan.');
+  }
+  function openSkip(itemId?: string) {
+    setSkipItem(itemId ?? state.dailyItems?.[0]?.id ?? ''); setSkipFrom(selectedDay < today ? today : selectedDay); setSkipTo(addDays(selectedDay < today ? today : selectedDay, 6)); open('skip');
+  }
+  function saveSkip(event?: GestureResponderEvent) {
+    const item = (state.dailyItems ?? []).find(i => i.id === skipItem);
+    if (!item) {setFormError('Pilih pengeluaran harian dulu.'); return;}
+    const before = current.current;
+    if (dispatch({type: 'daily/skipRange', itemId: item.id, from: skipFrom.trim(), to: skipTo.trim()})) {
+      setSheet(null); sendToLeftover(pointOf(event), before, T.flyDelayAfterSheet); notify(`${item.title} ditandai libur ${shortDate(skipFrom.trim())} – ${shortDate(skipTo.trim())}. Uangnya masuk Uang Sisa di tiap harinya.`);
+    }
+  }
+  async function runCloud(task: () => Promise<void>) {setBusy(true); setCloudMessage(''); try {await task();} catch (error) {const message = error instanceof Error ? error.message : 'Koneksi belum berhasil. Coba lagi nanti.'; setCloudMessage(message); notify(message, 'error');} finally {setBusy(false);}}
   async function upload() {
     if (!cloud) return;
-    if (demo) {setCloudMessage('Data contoh tidak diunggah. Mulai data pribadi dulu.'); return;}
+    if (demo) {setCloudMessage('Data contoh tidak diunggah. Mulai data pribadi dulu.'); notify('Data contoh tidak diunggah. Mulai data pribadi dulu.', 'error'); return;}
     const remote = await cloud.loadSnapshot();
     if (remote) {
-      Alert.alert('Perbarui data cloud?', 'Data cloud akan diganti oleh data dari perangkat ini. Pastikan perangkat ini berisi perubahan terbaru.', [{text: 'Batal', style: 'cancel'}, {text: 'Unggah data ini', onPress: () => runCloud(async () => {await cloud!.saveSnapshot(current.current, remote.revision); setCloudMessage('Data tersimpan di cloud. Di web, pilih ambil dari cloud.');})}]);
-    } else {await cloud.saveSnapshot(current.current, 0); setCloudMessage('Data pertama berhasil tersimpan di cloud.');}
+      showDialog('Perbarui data cloud?', 'Data cloud akan diganti oleh data dari perangkat ini. Pastikan perangkat ini berisi perubahan terbaru.', [{text: 'Batal', style: 'cancel'}, {text: 'Unggah data ini', onPress: () => runCloud(async () => {await cloud!.saveSnapshot(current.current, remote.revision); setCloudMessage('Data tersimpan di cloud. Di web, pilih ambil dari cloud.'); notify('Data berhasil diunggah ke cloud.');})}]);
+    } else {await cloud.saveSnapshot(current.current, 0); setCloudMessage('Data pertama berhasil tersimpan di cloud.'); notify('Data pertama berhasil diunggah ke cloud.');}
   }
   async function download() {
     if (!cloud) return;
     const remote = await cloud.loadSnapshot();
-    if (!remote) {setCloudMessage('Belum ada data di cloud. Unggah dari perangkat utama dulu.'); return;}
-    Alert.alert('Ambil data cloud?', 'Data pada perangkat ini akan diganti dengan data cloud. Buat cadangan terlebih dahulu jika diperlukan.', [{text: 'Batal', style: 'cancel'}, {text: 'Ambil data', onPress: () => {setDemo(false); persist(remote.data, false); setCloudMessage('Data cloud sudah tersimpan di perangkat ini.');}}]);
+    if (!remote) {setCloudMessage('Belum ada data di cloud. Unggah dari perangkat utama dulu.'); notify('Belum ada data di cloud. Unggah dari perangkat utama dulu.', 'error'); return;}
+    showDialog('Ambil data cloud?', 'Data pada perangkat ini akan diganti dengan data cloud. Buat cadangan terlebih dahulu jika diperlukan.', [{text: 'Batal', style: 'cancel'}, {text: 'Ambil data', onPress: () => {setDemo(false); persist(remote.data, false); setCloudMessage('Data cloud sudah tersimpan di perangkat ini.'); notify('Data cloud dimuat ke perangkat ini.');}}]);
   }
   if (!loaded) return <SafeAreaView style={[s.screen, {justifyContent: 'center'}]}><ActivityIndicator color={c.ink} /></SafeAreaView>;
 
@@ -457,20 +762,31 @@ function DanaSiap() {
     <Grid /><View style={s.between}><View style={[s.row, {gap: 7}]}><Icon name="aperture" size={23} /><Text style={[s.heading, {fontSize: 24}]}>DanaSiap</Text></View><Text style={[s.mini, {color: c.ink}]}>KEUANGAN PRIBADI</Text></View>
     <Image source={require('../assets/welcome.png')} resizeMode="contain" style={{width: '100%', height: '41%', alignSelf: 'center'}} />
     <View style={{gap: 17}}><Text style={s.welcomeTitle}>Uang hari ini.{`\n`}Tenang untuk{`\n`}hari nanti. <Text style={{fontSize: 42}}>↗</Text></Text><Text style={[s.body, {lineHeight: 21, maxWidth: 290}]}>Kerja, nabung, dan kebutuhanmu.{`\n`}Semuanya punya rencana.</Text>
-      {storageError ? <Text style={s.error}>{storageError}</Text> : <><Button title="Mulai rencana gue" icon="arrow-up-right" onPress={() => open('setup')} /><AnimatedPressable accessibilityRole="button" onPress={startDemo} style={{padding: 9, alignItems: 'center'}} scaleTo={0.94}><Text style={s.actionLabel}>Lihat dulu dengan data contoh →</Text></AnimatedPressable></>}
+      {storageError ? <Text style={s.error}>{storageError}</Text> : <><Button title="Mulai rencana gue" icon="arrow-up-right" onPress={() => open('setup')} /><AnimatedPressable accessibilityRole="button" onPress={startDemo} style={{padding: 9, alignItems: 'center'}}><Text style={s.actionLabel}>Lihat dulu dengan data contoh →</Text></AnimatedPressable></>}
     </View>
   </SafeAreaView>;
 
   function switchTab(nextTab: Tab) {
     if (nextTab === tab) return;
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    tabAnim.setValue(0);
+    // Pattern 1: the content area cross-blurs (see CrossBlur around the screens); the nav pill slides.
     setTab(nextTab);
-    Animated.timing(tabAnim, {
-      toValue: 1,
-      duration: 220,
-      useNativeDriver: true,
-    }).start();
+  }
+  /**
+   * Pattern 8: when money lands in Uang Sisa, a "+Rp …" chip flies from where it came from to the
+   * Uang Sisa card (or the Beranda tab when the card is not on screen). The card value waits for the chip.
+   */
+  function sendToLeftover(point: {x: number; y: number} | null, before: AppState, delay = 0) {
+    let prev = 0, next = 0;
+    try {prev = Math.max(0, periodBudget(before, today).leftoverPot); next = Math.max(0, periodBudget(current.current, today).leftoverPot);} catch {return;}
+    if (next <= prev || !point || isReducedMotion()) return;
+    setHeldPot(prev);
+    const target = tab === 'home' && leftoverRef.current ? leftoverRef.current : homeNavRef.current;
+    const land = () => {setHeldPot(null); potPop.setValue(1.04); spring(potPop, 1, {pop: true}).start();};
+    measure(target).then(rect => {
+      const {width, height} = Dimensions.get('window');
+      const to = rect && rect.y + rect.height > 0 && rect.y < height ? rect : {x: width / 2 - 20, y: height - 90, width: 40, height: 40};
+      flyChip({from: point, to, text: `+${currency(next - prev)}`, delay, onLand: land});
+    });
   }
 
   function NeedRow({need, compact = false}: {need: Need; compact?: boolean}) {
@@ -479,7 +795,6 @@ function DanaSiap() {
       <AnimatedPressable
         accessibilityLabel={`Detail ${need.title}`}
         onPress={() => {setFormError(''); setRescheduleDate(need.dueDate); setAllocatedInput(formatThousands(need.saved)); setEditingNeed(need);}}
-        scaleTo={0.97}
         style={{gap: 10, paddingVertical: 5}}
       >
         <View style={[s.row, {gap: 11}]}>
@@ -511,7 +826,6 @@ function DanaSiap() {
         accessibilityLabel="Buka pengaturan profil"
         style={[s.row, {gap: 10}]}
         onPress={() => open('settings')}
-        scaleTo={0.96}
       >
         <View style={[s.avatar, {overflow: 'hidden'}]}>
           {state.profile.avatarUrl ? (
@@ -528,8 +842,7 @@ function DanaSiap() {
       <AnimatedPressable
         accessibilityLabel="Lihat peringatan"
         style={s.circle}
-        scaleTo={0.9}
-        onPress={() => Alert.alert('Peringatan DanaSiap', projection.risks.length ? projection.risks.map(r => `${r.title} (${shortDate(r.date)}): diprediksi kurang ${currency(r.shortfall)}`).join('\n\n') : 'Belum ada kekurangan yang diprediksi berdasarkan rencana saat ini.')}
+        onPress={() => showDialog('Peringatan DanaSiap', projection.risks.length ? projection.risks.map(r => `${r.title} (${shortDate(r.date)}): diprediksi kurang ${currency(r.shortfall)}`).join('\n') : 'Belum ada kekurangan yang diprediksi berdasarkan rencana saat ini.', undefined, {icon: 'bell'})}
       >
         <Icon name="bell" size={19} />
         {projection.risks.length > 0 && <View style={{position: 'absolute', width: 6, height: 6, backgroundColor: '#D97553', borderRadius: 4, top: 10, right: 12}} />}
@@ -537,12 +850,73 @@ function DanaSiap() {
     </View>
   );
 
+  const line = (label: string, value: string, strong = false) => <View key={label} style={[s.between, {gap: 12}]}><Text style={[s.mini, {flex: 1}, strong && {color: c.ink, fontFamily: 'DMMedium', fontSize: 11}]}>{label}</Text><RollingValue value={value} align="right" bg={c.white} style={[s.body, {fontFamily: strong ? 'Barlow' : 'BarlowMedium', fontSize: strong ? 17 : 14}]} /></View>;
+  function dailyEntry(item: DailyItem, date: string) {
+    const left = dailyLeftoverOf(item.id, date);
+    const recorded = state.transactions.some(t => t.id === dailyTransactionId(item.id, date));
+    const unused = left >= item.amount;
+    const status = unused ? `Nggak dipakai · +${currency(left)} ke uang sisa` : left > 0 ? `Terpakai ${currency(item.amount - left)} · sisa ${currency(left)}` : recorded ? 'Tercatat otomatis' : date > today ? 'Terjadwal · tercatat otomatis di harinya' : 'Terjadwal';
+    return <View key={item.id} style={{gap: 9, paddingVertical: 4}}>
+      <View style={[s.row, {gap: 11}]}>
+        <View style={[s.needIcon, {backgroundColor: unused ? '#F4F6F0' : '#ECF2DE'}]}><Icon name={unused ? 'slash' : left > 0 ? 'corner-down-left' : 'check'} size={17} /></View>
+        <View style={{flex: 1, gap: 4}}><Text style={s.listTitle}>{item.title}</Text><Text style={[s.mini, left > 0 && {color: '#5E7F2A'}]}>{status}</Text></View>
+        <Text style={[s.amount, unused && {color: c.muted, textDecorationLine: 'line-through'}]}>{currency(item.amount)}</Text>
+      </View>
+      <StaggerList style={[s.row, {gap: 7, flexWrap: 'wrap'}]}>
+        {!unused && <TinyButton label="Nggak dipakai" onPress={e => markDaily(item, date, item.amount, e)} />}
+        <TinyButton label="Ada sisa…" onPress={() => openDailyLeftover(item, date)} />
+        {left > 0 && <TinyButton label="Batalkan" onPress={() => markDaily(item, date, 0)} />}
+      </StaggerList>
+    </View>;
+  }
+  const todayPlans = budget.dailyPlans.filter(p => p.today.scheduled);
+  const budgetCard = <View style={s.section}>
+    <PanelNotch />
+    <View style={s.between}><Text style={s.mini}>{`${shortDate(budget.start)} – ${shortDate(budget.end)} · ${budget.daysLeft === 1 ? 'hari terakhir' : `${budget.daysLeft} hari lagi`}`}</Text><Icon name="calendar" size={15} color={c.muted} /></View>
+    <View>
+      <Text style={s.mini}>Boleh jajan hari ini</Text>
+      <RollingValue value={currency(Math.max(0, budget.leftToday))} bg={c.white} containerStyle={{alignSelf: 'flex-start', marginTop: 2}} style={[s.number, {fontSize: 36}]} />
+      <Text style={[s.mini, budget.leftToday < 0 && {color: c.red}]}>{budget.leftToday < 0 ? `Lebih ${currency(-budget.leftToday)} dari jatah ${currency(budget.perDay)} hari ini` : `dari ${currency(budget.perDay)} · terpakai ${currency(budget.spentToday)}`}</Text>
+    </View>
+    <View style={[s.row, {gap: 9, padding: 11, borderRadius: 14, backgroundColor: budget.shortfall === 0 ? '#ECF2DE' : budget.coveredByLeftover ? '#FBF3E0' : '#FDF0EE'}]}>
+      <Icon name={budget.shortfall === 0 ? 'shield' : 'alert-circle'} size={16} color={budget.shortfall > 0 && !budget.coveredByLeftover ? c.red : c.ink} />
+      <Text style={[s.body, {flex: 1}, budget.shortfall > 0 && !budget.coveredByLeftover && {color: c.red}]}>{budget.shortfall === 0 ? '✓ Wajib aman' : budget.coveredByLeftover ? `Wajib aman kalau pakai ${currency(budget.shortfall)} dari Uang Sisa` : `Wajib kurang ${currency(budget.shortfall)}`}</Text>
+    </View>
+    <Collapse visible={showBreakdown}><StaggerList visible={showBreakdown} origin="bottom" bg={c.white} style={{gap: 8}}>
+      {line('Uang sekarang', currency(budget.money))}
+      {budget.expectedIncome > 0 && line('+ Pemasukan yang masih akan masuk', currency(budget.expectedIncome))}
+      {line('− Kebutuhan wajib', currency(budget.obligations))}
+      {line('− Pengeluaran harian sisa periode', currency(budget.dailyRemaining))}
+      {budget.leftoverPot > 0 && line('− Uang sisa (dipisah)', currency(budget.leftoverPot))}
+      <View style={s.divider} />
+      {line('= Uang bebas', currency(budget.freeMoney), true)}
+      {line(`÷ ${budget.daysLeft} hari${budget.spentToday > 0 ? ` (termasuk jajan hari ini ${currency(budget.spentToday)})` : ''}`, `${currency(budget.perDay)}/hari`)}
+      <View style={s.divider} />
+      {budget.carryOver > 0 && line('Sisa periode lalu', currency(budget.carryOver))}
+      {line('Uang masuk periode ini', currency(budget.periodIncome))}
+      {budget.heldForNextPeriod > 0 && <Text style={s.muted}>{currency(budget.heldForNextPeriod)} disimpan untuk periode berikutnya, belum dihitung di sini.</Text>}
+    </StaggerList></Collapse>
+    <View style={[s.row, {gap: 8}]}>
+      <View style={{flex: 1}}><Button title={showBreakdown ? 'Tutup hitungan' : 'Lihat hitungan'} secondary icon={showBreakdown ? 'chevron-up' : 'list'} onPress={() => {layoutSpring(); setShowBreakdown(!showBreakdown);}} /></View>
+      <View style={{flex: 1}}><Button title="Cek sebelum beli" icon="search" onPress={() => open('check')} /></View>
+    </View>
+  </View>;
+  const dailyToday = <View style={s.section}>
+    <PanelNotch />
+    <SectionHead title="Pengeluaran hari ini" action="Atur" onPress={() => open('setup')} />
+    {!(state.dailyItems ?? []).length ? <><Empty text="Belum ada pengeluaran harian. Tambahkan ongkos anak, uang masak, atau lainnya supaya tercatat otomatis tiap hari." /><Button title="Atur pengeluaran harian" secondary icon="plus" onPress={() => open('setup')} /></> : todayPlans.length ? todayPlans.map((plan, i) => <React.Fragment key={plan.item.id}>{i > 0 && <View style={s.divider} />}{dailyEntry(plan.item, today)}</React.Fragment>) : <Text style={s.muted}>Hari ini nggak ada pengeluaran harian yang terjadwal.</Text>}
+  </View>;
+  const leftoverCard = <Animated.View style={{transform: [{scale: potPop}]}}><AnimatedPressable viewRef={leftoverRef} accessibilityLabel="Buka Uang Sisa" onPress={() => open('leftover')} style={[s.section, {flexDirection: 'row', alignItems: 'center', gap: 13}]}>
+    <PopIn trigger={heldPot === null ? budget.leftoverPot : 'held'} style={[s.needIcon, {backgroundColor: c.lime}]}><Icon name="archive" size={18} /></PopIn>
+    <View style={{flex: 1, gap: 3}}><Text style={s.mini}>UANG SISA PERIODE INI</Text><RollingValue value={currency(heldPot ?? Math.max(0, budget.leftoverPot))} bg={c.white} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {fontSize: 24}]} /><Text style={s.mini}>{budget.leftovers.length ? `${budget.leftovers.length} catatan · sudah dipakai ${currency(budget.leftoverUsed)}` : 'Uang rencana yang nggak kepakai terkumpul di sini.'}</Text></View>
+    <Icon name="chevron-right" />
+  </AnimatedPressable></Animated.View>;
+
   const home = <>
     {header}
     {demo && (
       <AnimatedPressable
         onPress={() => open('settings')}
-        scaleTo={0.97}
         style={[s.between, {padding: 9, backgroundColor: '#E2EFD0', borderRadius: 11}]}
       >
         <Text style={s.mini}>DATA CONTOH · bukan saldo pribadi</Text>
@@ -574,13 +948,13 @@ function DanaSiap() {
           <Text style={s.cardLabel}>Total saldo kamu</Text>
           <CardChip />
         </View>
-        <Text style={[s.cardBalance, {fontSize: 36, marginTop: 4}]}>{currency(balance(state))}</Text>
+        <RollingValue value={currency(balance(state))} bg={c.ink} containerStyle={{alignSelf: 'flex-start', marginTop: 4}} style={[s.cardBalance, {fontSize: 36, marginTop: 0}]} />
       </View>
 
       {/* Safe to spend section */}
       <View style={{marginTop: 18}}>
         <Text style={[s.cardLabel, {fontSize: 9.5, letterSpacing: 1.2, color: '#97A588'}]}>AMAN DIPAKAI SEKARANG</Text>
-        <Text style={[s.cardBalance, {fontSize: 24, color: c.lime, marginTop: 3}]}>{currency(projection.safeToSpend)}</Text>
+        <RollingValue value={currency(projection.safeToSpend)} bg={c.ink} containerStyle={{alignSelf: 'flex-start', marginTop: 3}} style={[s.cardBalance, {fontSize: 24, color: c.lime, marginTop: 0}]} />
       </View>
 
       {/* Right accent stripe */}
@@ -595,7 +969,6 @@ function DanaSiap() {
         accessibilityLabel="Atur dana"
         onPress={() => switchTab('needs')}
         style={s.cardAturDana}
-        scaleTo={0.92}
       >
         <View style={s.cardAturDanaPlus}>
           <Icon name="plus" size={10} color={c.lime} />
@@ -604,18 +977,21 @@ function DanaSiap() {
       </AnimatedPressable>
     </View>
 
+    {budgetCard}
+
     {/* Quick Action Shortcuts */}
     <View style={s.between}>
       {([
         {name: 'arrow-up-right', label: 'Uang keluar', action: () => open('expense')},
         {name: 'arrow-down-left', label: 'Uang masuk', action: () => open('income')},
-        {name: 'calendar', label: 'Absensi', action: () => {
+        working ? {name: 'calendar', label: 'Absensi', action: () => {
           setSelectedDay(today);
-          setAttStatus(todayAttendance?.status ?? 'present');
-          setAttIncome(formatThousands(todayAttendance?.income ?? state.profile.dailyIncome));
+          const status = todayAttendance?.auto ? 'absent' : todayAttendance?.status ?? (todayIsWorkday ? 'present' : 'holiday');
+          setAttStatus(status);
+          setAttIncome(formatThousands(status === 'present' ? todayAttendance?.income ?? state.profile.dailyIncome : 0));
           setSheet('attendance');
           setFormError('');
-        }},
+        }} : {name: 'layers', label: 'Rencana', action: () => open('need')},
         {name: 'grid', label: 'Lainnya', action: () => open('settings')},
       ] as {name: IconName; label: string; action: () => void}[]).map((item, i) => (
         <AnimatedPressable
@@ -623,7 +999,6 @@ function DanaSiap() {
           accessibilityLabel={item.label}
           onPress={item.action}
           style={s.shortcut}
-          scaleTo={0.91}
         >
           <View style={[s.shortcutCircle, i === 3 && {backgroundColor: c.lime}]}>
             <Icon name={item.name} size={23} />
@@ -633,7 +1008,11 @@ function DanaSiap() {
       ))}
     </View>
 
-    <View style={s.section}>
+    {dailyToday}
+
+    {leftoverCard}
+
+    {working && <View style={s.section}>
       <PanelNotch />
       <SectionHead title="Estimasi Gajian & Akumulasi" action={payroll.daysUntilPayday === 0 ? 'Hari ini cair!' : `${payroll.daysUntilPayday} hari lagi`} />
       <View style={s.between}>
@@ -657,7 +1036,7 @@ function DanaSiap() {
           <Text style={[s.body, {fontFamily: 'BarlowMedium'}]}>{currency(payroll.allowanceReceived)}</Text>
         </View>
       ) : null}
-    </View>
+    </View>}
 
     <View style={s.section}>
       <PanelNotch />
@@ -679,7 +1058,7 @@ function DanaSiap() {
       <SectionHead title="Aktivitas terbaru" action="Semua" onPress={() => switchTab('insights')} />
       {transactions.length ? (
         transactions.slice(0, 4).map((t, i) => (
-          <React.Fragment key={t.id}>
+          <Appear key={t.id} style={{gap: 13}}>
             {i > 0 && <View style={s.divider} />}
             <View style={[s.row, {gap: 11}]}>
               <View style={[s.needIcon, {backgroundColor: c.ink}]}>
@@ -691,7 +1070,7 @@ function DanaSiap() {
               </View>
               <Text style={s.amount}>{t.type === 'income' ? '+' : '−'}{currency(t.amount)}</Text>
             </View>
-          </React.Fragment>
+          </Appear>
         ))
       ) : (
         <Empty text="Catat pengeluaran pertamamu lewat tombol + di bawah." />
@@ -699,8 +1078,8 @@ function DanaSiap() {
     </View>
 
     <Notice
-      title={projection.shortfall > 0 ? `Ada potensi kurang ${currency(projection.shortfall)}` : todayIsWorkday ? 'Satu hari kerja, satu langkah lagi.' : 'Hari ini libur. Rencana tetap jalan.'}
-      text={projection.shortfall > 0 ? 'Cek rencana dan simulasi absensi supaya kebutuhan tetap kebayar tepat waktu.' : todayIsWorkday ? `Target alokasi ${currency(projection.requiredDaily)} per hari kerja. Catat kehadiran untuk prediksi terbaru.` : 'Pemasukan hari libur tidak dihitung. Pengeluaran dan jatuh tempo tetap diperhitungkan.'}
+      title={projection.shortfall > 0 ? `Ada potensi kurang ${currency(projection.shortfall)}` : !working ? 'Rencana tetap jalan.' : todayIsWorkday ? 'Satu hari kerja, satu langkah lagi.' : 'Hari ini libur. Rencana tetap jalan.'}
+      text={projection.shortfall > 0 ? (working ? 'Cek rencana dan simulasi absensi supaya kebutuhan tetap kebayar tepat waktu.' : 'Cek rencana kebutuhan dan catat uang masuk supaya kebutuhan tetap kebayar tepat waktu.') : !working ? 'Catat uang masuk dan keluar. Kebutuhan dan jatuh tempo tetap diperhitungkan.' : todayIsWorkday ? `Target alokasi ${currency(projection.requiredDaily)} per hari kerja. Hari ini otomatis tercatat masuk, tandai lewat Absensi kalau nggak masuk.` : 'Pemasukan hari libur tidak dihitung. Pengeluaran dan jatuh tempo tetap diperhitungkan.'}
     />
   </>;
 
@@ -710,37 +1089,60 @@ function DanaSiap() {
         <Text style={s.mini}>SATU PER SATU, JADI SIAP</Text>
         <Text style={[s.title, {fontSize: 33}]}>Rencana kebutuhan</Text>
       </View>
-      <AnimatedPressable accessibilityLabel="Tambah kebutuhan" onPress={() => open('need')} style={[s.circle, {backgroundColor: c.lime}]} scaleTo={0.9}>
+      <AnimatedPressable accessibilityLabel="Tambah kebutuhan" onPress={() => open('need')} style={[s.circle, {backgroundColor: c.lime}]}>
         <Icon name="plus" />
       </AnimatedPressable>
     </View>
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap: 8, paddingVertical: 2}} style={{flexGrow: 0}}>
-      {([{key: 'all', name: 'Semua'}, {key: 'debt', name: 'Utang'}, {key: 'recurring', name: 'Rutin'}, {key: 'goal', name: 'Tujuan'}] as const).map(item => (
-        <Chip key={item.key} label={item.name} active={needFilter === item.key} onPress={() => setNeedFilter(item.key)} />
-      ))}
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{paddingVertical: 2}} style={{flexGrow: 0}}>
+      <SegmentPills style={{gap: 8}} options={[{key: 'all', label: 'Semua'}, {key: 'debt', label: 'Utang'}, {key: 'recurring', label: 'Rutin'}, {key: 'goal', label: 'Tujuan'}] as const} value={needFilter} onChange={setNeedFilter} />
     </ScrollView>
     <View style={[s.row, {gap: 10}]}>
       <View style={s.stat}>
         <Text style={s.mini}>Sudah dialokasikan</Text>
-        <Text style={s.number}>{currency(projection.allocated)}</Text>
+        <RollingValue value={currency(projection.allocated)} bg={c.lime} containerStyle={{alignSelf: 'flex-start'}} style={s.number} />
         <Icon name="layers" />
       </View>
       <View style={[s.stat, {backgroundColor: c.ink}]}>
-        <Text style={[s.mini, {color: '#B3BDA8'}]}>Target / hari kerja</Text>
-        <Text style={[s.number, {color: c.white}]}>{currency(projection.requiredDaily)}</Text>
-        <Text style={[s.mini, {color: '#B3BDA8'}]}>{projection.workdays} hari kerja dalam periode</Text>
+        <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? 'Target / hari kerja' : 'Uang bebas periode ini'}</Text>
+        <RollingValue value={currency(working ? projection.requiredDaily : Math.max(0, budget.freeMoney))} bg={c.ink} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {color: c.white}]} />
+        <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? `${projection.workdays} hari kerja dalam periode` : 'Setelah semua kebutuhan wajib'}</Text>
       </View>
     </View>
+    <View style={s.section}>
+      <PanelNotch />
+      <SectionHead title="Belanja bulanan" action="Atur daftar" onPress={() => openShopping('edit')} />
+      {state.shopping?.items.length ? <>
+        <View>
+          <Text style={s.mini}>{`${state.shopping.items.filter(i => !i.skip).length} barang · jadwal ${shortDate(shoppingDueDate(state, today))}`}</Text>
+          <RollingValue value={currency(shoppingTotal(state.shopping))} bg={c.white} containerStyle={{alignSelf: 'flex-start', marginTop: 3}} style={[s.number, {fontSize: 24}]} />
+          {state.shopping.lastDone && <Text style={s.mini}>Terakhir belanja {shortDate(state.shopping.lastDone)}</Text>}
+        </View>
+        <Button title="Mulai belanja" icon="shopping-cart" onPress={() => openShopping('buy')} />
+      </> : <>
+        <Text style={s.muted}>Tulis daftar belanja rutin (beras, minyak, sabun…). Totalnya jadi kebutuhan wajib tiap periode.</Text>
+        <Button title="Bikin daftar belanja" secondary icon="plus" onPress={() => openShopping('edit')} />
+      </>}
+    </View>
+    <View style={s.section}>
+      <PanelNotch />
+      <SectionHead title="Token listrik" action="Buka" onPress={() => open('token')} />
+      {electricity.purchases ? <View>
+        <Text style={s.mini}>{electricity.costPerDay !== undefined ? `± ${currency(electricity.costPerDay)}/hari${electricity.nextPurchaseDate ? ` · perkiraan habis ${shortDate(electricity.nextPurchaseDate)}` : ''}` : 'Perkiraan muncul setelah 2 kali beli token'}</Text>
+        <Text style={[s.number, {fontSize: 24, marginTop: 3}]}>{currency(electricity.typicalAmount)}</Text>
+        {electricity.target && electricity.target.overBudget > 0 && <Text style={[s.mini, {color: c.red}]}>Lebih {currency(electricity.target.overBudget)} dari jatah bulanan</Text>}
+      </View> : <Text style={s.muted}>Catat tiap beli token, DanaSiap perkirakan kapan habis dan berapa sebulan.</Text>}
+      <Button title="Beli token / cek meteran" icon="zap" secondary={!electricity.purchases} onPress={() => open('token')} />
+    </View>
     {activeNeeds.filter(n => needFilter === 'all' || n.kind === needFilter).map(n => (
-      <View style={s.section} key={n.id}>
+      <Appear style={s.section} key={n.id}>
         <NeedRow need={n} />
         <View style={s.between}>
           <Text style={s.mini}>{n.priority === 'essential' ? '● Kebutuhan wajib' : '○ Jadwal fleksibel'}</Text>
-          <AnimatedPressable onPress={() => {setEditingNeed(n); setRescheduleDate(n.dueDate); setAllocatedInput(String(n.saved)); setFormError('');}} scaleTo={0.93}>
+          <AnimatedPressable onPress={() => {setEditingNeed(n); setRescheduleDate(n.dueDate); setAllocatedInput(String(n.saved)); setFormError('');}}>
             <Text style={s.actionLabel}>Atur rencana ↗</Text>
           </AnimatedPressable>
         </View>
-      </View>
+      </Appear>
     ))}
     {!activeNeeds.filter(n => needFilter === 'all' || n.kind === needFilter).length && (
       <View style={s.section}>
@@ -756,34 +1158,52 @@ function DanaSiap() {
   const selectedAttendance = state.attendance.find(a => a.date === selectedDay);
   const selectedHoliday = getHoliday(selectedDay);
   const selectedWorkday = isWorkday(state, selectedDay);
-  const calendarScreen = <><View><Text style={s.mini}>RITME KERJA, RITME UANG</Text><Text style={[s.title, {fontSize: 33}]}>Kalender kerja</Text></View><View style={s.section}><View style={s.between}><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan sebelumnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', -1))} scaleTo={0.88}><Icon name="chevron-left" /></AnimatedPressable><Text style={s.heading}>{monthStart.toLocaleDateString('id-ID', {month: 'long', year: 'numeric'})}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan berikutnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', monthDays))} scaleTo={0.88}><Icon name="chevron-right" /></AnimatedPressable></View><View style={{flexDirection: 'row', flexWrap: 'wrap', gap: '1.75%'}}>{weekdays.map(day => <View key={day} style={[s.day, {height: 24}]}><Text style={s.mini}>{day}</Text></View>)}{Array.from({length: monthStart.getDay()}, (_, i) => <View key={`blank-${i}`} style={s.day} />)}{monthDates.map(date => {const a = state.attendance.find(a => a.date === date), work = isWorkday(state, date), hol = getHoliday(date); return <AnimatedPressable key={date} accessibilityRole="button" accessibilityLabel={`${shortDate(date)}, ${hol ? hol + ', ' : ''}${a?.status ?? (work ? 'jadwal kerja' : 'libur')}`} onPress={() => setSelectedDay(date)} scaleTo={0.9} style={[s.day, date === selectedDay ? {backgroundColor: c.ink} : date === today ? {backgroundColor: c.lime} : hol ? {backgroundColor: '#FDF0EE', borderWidth: 1, borderColor: '#F5C2BC'} : !work || a?.status === 'holiday' ? {backgroundColor: '#F4F6F0'} : {}]}><Text style={[s.body, date === selectedDay && {color: c.lime}, hol && date !== selectedDay && {color: '#C93B2B', fontWeight: 'bold'}, !work && !hol && date !== selectedDay && {color: c.muted}]}>{Number(date.slice(-2))}</Text>{a ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: a.status === 'absent' ? '#D98B66' : c.lime}} /> : hol ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#E86555'}} /> : null}</AnimatedPressable>;})}</View><Text style={s.mini}>● Hijau: tercatat  ·  ● Merah: tgl merah  ·  ● Oranye: tidak masuk  ·  Abu: libur</Text></View>
-    <View style={s.section}><SectionHead title={shortDate(selectedDay)} /><Text style={s.body}>{selectedAttendance?.planned ? 'Rencana kehadiran · belum dikonfirmasi' : selectedAttendance ? ({present: 'Sudah masuk kerja', absent: 'Tidak masuk', holiday: 'Libur terjadwal', half: 'Setengah hari'}[selectedAttendance.status]) : selectedHoliday ? `Tanggal Merah: ${selectedHoliday}` : selectedWorkday ? 'Jadwal kerja · belum dicatat' : 'Hari libur · pemasukan diprediksi Rp0'}</Text><Text style={s.muted}>Pemasukan kerja: {currency(selectedAttendance?.income ?? (selectedWorkday ? state.profile.dailyIncome : 0))}</Text><Button title={selectedAttendance?.planned ? 'Konfirmasi kehadiran aktual' : selectedAttendance ? 'Ubah kehadiran' : 'Catat kehadiran'} onPress={() => open('attendance')} icon="check-circle" />{activeNeeds.filter(n => n.dueDate === selectedDay).map(n => <NeedRow key={n.id} need={n} compact />)}</View>
+  const leftoverDates = new Set((state.leftovers ?? []).map(l => l.date));
+  const selectedDaily = (state.dailyItems ?? []).filter(item => isScheduled(item, selectedDay) && selectedDay >= item.since);
+  const dailyDay = (state.dailyItems ?? []).length ? <><View style={s.divider} /><Text style={s.fieldLabel}>PENGELUARAN HARIAN</Text>{selectedDaily.length ? selectedDaily.map(item => dailyEntry(item, selectedDay)) : <Text style={s.muted}>Nggak ada pengeluaran harian terjadwal di tanggal ini.</Text>}<Button title="Libur panjang" secondary icon="sun" onPress={() => openSkip()} /></> : null;
+  const calendarScreen = <><View><Text style={s.mini}>{working ? 'RITME KERJA, RITME UANG' : 'JADWAL & KEBUTUHAN'}</Text><Text style={[s.title, {fontSize: 33}]}>{working ? 'Kalender kerja' : 'Kalender'}</Text></View><View style={s.section}><View style={s.between}><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan sebelumnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', -1))}><Icon name="chevron-left" /></AnimatedPressable><Text style={s.heading}>{monthStart.toLocaleDateString('id-ID', {month: 'long', year: 'numeric'})}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan berikutnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', monthDays))}><Icon name="chevron-right" /></AnimatedPressable></View><View style={s.calendarGrid}>{weekdays.map(day => <View key={day} style={[s.dayCell, {marginBottom: 4}]}><View style={[s.day, {height: 24}]}><Text style={s.mini}>{day}</Text></View></View>)}{Array.from({length: monthStart.getDay()}, (_, i) => <View key={`blank-${i}`} style={s.dayCell} />)}{monthDates.map(date => {const a = state.attendance.find(a => a.date === date), work = isWorkday(state, date), hol = getHoliday(date); return <View key={date} style={s.dayCell}><AnimatedPressable accessibilityRole="button" accessibilityLabel={`${shortDate(date)}, ${hol ? hol + ', ' : ''}${working ? a?.status ?? (work ? 'jadwal kerja' : 'libur') : ''}`} onPress={() => setSelectedDay(date)} style={[s.day, date === selectedDay ? {backgroundColor: c.ink} : date === today ? {backgroundColor: c.lime} : hol ? {backgroundColor: '#FDF0EE', borderWidth: 1, borderColor: '#F5C2BC'} : working && (!work || a?.status === 'holiday') ? {backgroundColor: '#F4F6F0'} : {}]}><Text style={[s.body, date === selectedDay && {color: c.lime}, hol && date !== selectedDay && {color: '#C93B2B', fontWeight: 'bold'}, working && !work && !hol && date !== selectedDay && {color: c.muted}]}>{Number(date.slice(-2))}</Text><View style={[s.row, {gap: 2}]}>{a && working ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: a.status === 'absent' ? '#D98B66' : c.lime}} /> : hol ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#E86555'}} /> : null}{leftoverDates.has(date) && <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#6F9A2E'}} />}</View></AnimatedPressable></View>;})}</View><Text style={s.mini}>{working ? '● Hijau: tercatat  ·  ● Merah: tgl merah  ·  ● Oranye: tidak masuk  ·  Abu: libur  ·  ● Hijau tua: ada uang sisa' : '● Merah: tanggal merah  ·  ● Hijau tua: ada uang sisa'}</Text></View>
+    {!working ? <View style={s.section}><SectionHead title={shortDate(selectedDay)} />{selectedHoliday && <Text style={s.body}>Tanggal Merah: {selectedHoliday}</Text>}{activeNeeds.some(n => n.dueDate === selectedDay) ? activeNeeds.filter(n => n.dueDate === selectedDay).map(n => <NeedRow key={n.id} need={n} compact />) : <Text style={s.muted}>Tidak ada kebutuhan yang jatuh tempo di tanggal ini.</Text>}{dailyDay}</View> : <><View style={s.section}><SectionHead title={shortDate(selectedDay)} /><Text style={s.body}>{selectedAttendance?.planned ? 'Rencana kehadiran · belum dikonfirmasi' : selectedAttendance ? selectedAttendance.auto ? 'Masuk kerja · tercatat otomatis' : ({present: 'Sudah masuk kerja', absent: 'Tidak masuk', holiday: 'Libur terjadwal', half: 'Setengah hari'}[selectedAttendance.status]) : selectedHoliday ? `Tanggal Merah: ${selectedHoliday}` : selectedWorkday ? selectedDay > today ? 'Jadwal kerja · otomatis tercatat masuk di harinya' : 'Jadwal kerja · belum dicatat' : 'Hari libur · pemasukan diprediksi Rp0'}</Text><Text style={s.muted}>Pemasukan kerja: {currency(selectedAttendance?.income ?? (selectedWorkday ? state.profile.dailyIncome : 0))}</Text><Button title={selectedAttendance?.auto ? 'Tandai tidak masuk' : selectedAttendance?.planned ? 'Ubah rencana kehadiran' : selectedAttendance ? 'Ubah kehadiran' : 'Catat kehadiran'} onPress={() => open('attendance')} icon="check-circle" />{activeNeeds.filter(n => n.dueDate === selectedDay).map(n => <NeedRow key={n.id} need={n} compact />)}{dailyDay}</View>
     <Notice title="Kalau hari ini nggak masuk?" text={selectedDay < today ? 'Simulasi hanya untuk hari ini dan hari mendatang. Ubah catatan kehadiran untuk memperbaiki realisasi sebelumnya.' : !selectedWorkday ? 'Tanggal ini sudah dihitung sebagai libur. Tidak ada pemasukan kerja yang dikurangi.' : `Prediksi kekurangan menjadi ${currency(absence.shortfall)}${absence.shortfall > projection.shortfall ? `, bertambah ${currency(absence.shortfall - projection.shortfall)}` : ''}. Lihat dampak sebelum mencatat.`} icon="activity" />
-    <Button title="Atur hari kerja & pemasukan" secondary onPress={() => open('setup')} icon="sliders" />
+    <Button title="Atur hari kerja & pemasukan" secondary onPress={() => open('setup')} icon="sliders" /></>}
   </>;
   const expenseTotal = state.transactions.filter(t => t.type === 'expense' && t.date <= today).reduce((sum, t) => sum + t.amount, 0);
   const incomeTotal = state.transactions.filter(t => t.type === 'income' && t.date <= today).reduce((sum, t) => sum + t.amount, 0);
   const bars = projection.days.filter((_, i) => i % Math.max(1, Math.floor(period / 7)) === 0).slice(0, 7);
   const maxBar = Math.max(1, ...bars.map(d => Math.abs(d.balance)));
-  const insightsScreen = <><View style={s.between}><AnimatedPressable onPress={() => switchTab('home')} accessibilityLabel="Kembali ke beranda" style={s.circle} scaleTo={0.9}><Icon name="arrow-left" /></AnimatedPressable><Text style={s.title}>Statistik</Text><AnimatedPressable onPress={() => open('settings')} accessibilityLabel="Pengaturan" style={s.circle} scaleTo={0.9}><Icon name="more-horizontal" /></AnimatedPressable></View><View style={s.between}>{[{n: 7, label: '7 hari'}, {n: 14, label: '14 hari'}, {n: 30, label: '30 hari'}, {n: 90, label: '90 hari'}].map(p => <Chip key={p.n} label={p.label} active={period === p.n} onPress={() => setPeriod(p.n)} />)}</View><View style={[s.row, {gap: 12}]}><View style={s.stat}><View style={s.between}><Text style={s.mini}>↗ Pemasukan aktual</Text><Icon name="more-horizontal" size={17} /></View><Text style={s.number}>{currency(incomeTotal)}</Text><Text style={s.mini}>Total yang sudah dicatat</Text><View style={[s.progress, {marginTop: 13, backgroundColor: '#DBF2A0'}]}><View style={[s.progressFill, {width: `${incomeTotal ? Math.max(0, Math.min(100, (incomeTotal - expenseTotal) / incomeTotal * 100)) : 0}%`, backgroundColor: c.white}]} /></View></View><View style={[s.stat, {backgroundColor: c.ink}]}><View style={s.between}><Text style={[s.mini, {color: '#D0DBC2'}]}>↗ Pengeluaran aktual</Text><Icon name="more-horizontal" size={17} color={c.lime} /></View><Text style={[s.number, {color: c.white}]}>{currency(expenseTotal)}</Text><Svg width="100%" height="58" viewBox="0 0 150 58"><Path d="M10 45 L38 15 L65 37 L98 8 L137 40 L10 45 M38 15 L98 8 L65 37 L137 40 M10 45 L98 8" fill="none" stroke={c.lime} strokeWidth=".8" /></Svg></View></View><View style={s.section}><PanelNotch /><SectionHead title="Arah saldo kamu" /><View style={s.between}><View><Text style={s.mini}>Prediksi saldo akhir</Text><Text style={s.number}>{currency(projection.projectedBalance)}</Text></View><View style={{gap: 5}}><Text style={s.mini}>■ Hijau: tersedia</Text><Text style={s.mini}>■ Gelap: defisit</Text></View></View><View style={{height: 171, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', borderBottomWidth: 1, borderColor: c.line}}>{bars.map(d => <View key={d.date} style={{alignItems: 'center', width: '12%', justifyContent: 'flex-end', height: '100%'}}><View style={{height: Math.max(8, Math.abs(d.balance) / maxBar * 126), width: 21, backgroundColor: d.balance < 0 ? c.ink : c.lime, borderRadius: 3, overflow: 'hidden'}}>{Array.from({length: 8}, (_, i) => <View key={i} style={{position: 'absolute', height: 3, backgroundColor: c.white, width: '100%', bottom: i * 18}} />)}</View><Text style={[s.mini, {fontSize: 9, marginTop: 10, marginBottom: 8}]}>{shortDate(d.date)}</Text></View>)}</View><Text style={s.muted}>Perkiraan {period} hari, mengikuti jadwal kerja, kebutuhan, dan anggaran harianmu. Bukan pemasukan yang sudah diterima.</Text></View>
-    {projection.risks.map((r, i) => <Notice key={`${r.needId}-${i}`} title={`${r.title} · ${shortDate(r.date)}`} text={`Diprediksi kurang ${currency(r.shortfall)}. Tinjau pengeluaran dan hari kerja yang tersisa.`} icon="alert-circle" />)}
+  const insightsScreen = <><View style={s.between}><AnimatedPressable onPress={() => switchTab('home')} accessibilityLabel="Kembali ke beranda" style={s.circle}><Icon name="arrow-left" /></AnimatedPressable><Text style={s.title}>Statistik</Text><AnimatedPressable onPress={() => open('settings')} accessibilityLabel="Pengaturan" style={s.circle}><Icon name="more-horizontal" /></AnimatedPressable></View><SegmentPills style={{justifyContent: 'space-between'}} options={[{key: 7, label: '7 hari'}, {key: 14, label: '14 hari'}, {key: 30, label: '30 hari'}, {key: 90, label: '90 hari'}]} value={period} onChange={setPeriod} /><View style={[s.row, {gap: 12}]}><View style={s.stat}><View style={s.between}><Text style={s.mini}>↗ Pemasukan aktual</Text><Icon name="more-horizontal" size={17} /></View><RollingValue value={currency(incomeTotal)} bg={c.lime} containerStyle={{alignSelf: 'flex-start'}} style={s.number} /><Text style={s.mini}>Total yang sudah dicatat</Text><View style={[s.progress, {marginTop: 13, backgroundColor: '#DBF2A0'}]}><View style={[s.progressFill, {width: `${incomeTotal ? Math.max(0, Math.min(100, (incomeTotal - expenseTotal) / incomeTotal * 100)) : 0}%`, backgroundColor: c.white}]} /></View></View><View style={[s.stat, {backgroundColor: c.ink}]}><View style={s.between}><Text style={[s.mini, {color: '#D0DBC2'}]}>↗ Pengeluaran aktual</Text><Icon name="more-horizontal" size={17} color={c.lime} /></View><RollingValue value={currency(expenseTotal)} bg={c.ink} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {color: c.white}]} /><Svg width="100%" height="58" viewBox="0 0 150 58"><Path d="M10 45 L38 15 L65 37 L98 8 L137 40 L10 45 M38 15 L98 8 L65 37 L137 40 M10 45 L98 8" fill="none" stroke={c.lime} strokeWidth=".8" /></Svg></View></View><View style={s.section}><PanelNotch /><SectionHead title="Arah saldo kamu" /><View style={s.between}><View><Text style={s.mini}>Prediksi saldo akhir</Text><RollingValue value={currency(projection.projectedBalance)} bg={c.white} containerStyle={{alignSelf: 'flex-start'}} style={s.number} /></View><View style={{gap: 5}}><Text style={s.mini}>■ Hijau: tersedia</Text><Text style={s.mini}>■ Gelap: defisit</Text></View></View><View style={{height: 171, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', borderBottomWidth: 1, borderColor: c.line}}>{bars.map(d => <View key={d.date} style={{alignItems: 'center', width: '12%', justifyContent: 'flex-end', height: '100%'}}><View style={{height: Math.max(8, Math.abs(d.balance) / maxBar * 126), width: 21, backgroundColor: d.balance < 0 ? c.ink : c.lime, borderRadius: 3, overflow: 'hidden'}}>{Array.from({length: 8}, (_, i) => <View key={i} style={{position: 'absolute', height: 3, backgroundColor: c.white, width: '100%', bottom: i * 18}} />)}</View><Text style={[s.mini, {fontSize: 9, marginTop: 10, marginBottom: 8}]}>{shortDate(d.date)}</Text></View>)}</View><Text style={s.muted}>Perkiraan {period} hari, mengikuti {working ? 'jadwal kerja, ' : ''}kebutuhan, dan anggaran harianmu. Bukan pemasukan yang sudah diterima.</Text></View>
+    {projection.risks.map((r, i) => <Notice key={`${r.needId}-${i}`} title={`${r.title} · ${shortDate(r.date)}`} text={`Diprediksi kurang ${currency(r.shortfall)}. ${working ? 'Tinjau pengeluaran dan hari kerja yang tersisa.' : 'Tinjau pengeluaran atau catat uang masuk.'}`} icon="alert-circle" />)}
     <View style={s.section}><SectionHead title="Semua transaksi" />{transactions.length ? transactions.map(t => <View key={t.id} style={[s.between, {paddingVertical: 7, gap: 15}]}><View style={{flex: 1}}><Text style={s.listTitle}>{t.title}</Text><Text style={s.mini}>{shortDate(t.date)} · {t.category}</Text></View><Text style={s.amount}>{t.type === 'income' ? '+' : '−'}{currency(t.amount)}</Text></View>) : <Empty text="Belum ada transaksi yang dicatat." />}</View>
   </>;
 
-  return <View style={s.screen}>{started ? <SafeAreaView style={s.fill} edges={['top', 'left', 'right']}><Grid /><ScrollView contentContainerStyle={[s.content, {paddingBottom: 110 + insets.bottom}]} showsVerticalScrollIndicator={false}>{storageError && <Notice title="Periksa penyimpanan" text={storageError} icon="alert-circle" />}<Animated.View style={{gap: 16, opacity: tabAnim, transform: [{translateY: tabAnim.interpolate({inputRange: [0, 1], outputRange: [12, 0]})}]}}>{tab === 'home' ? home : tab === 'needs' ? needsScreen : tab === 'calendar' ? calendarScreen : insightsScreen}</Animated.View></ScrollView><View style={[s.navWrap, {bottom: Math.max(insets.bottom, 16)}]}><View style={s.nav}>{([{key: 'home', icon: 'home', label: 'Beranda'}, {key: 'needs', icon: 'layers', label: 'Kebutuhan'}, {key: 'plus', icon: 'plus', label: 'Tambah transaksi'}, {key: 'calendar', icon: 'calendar', label: 'Kalender'}, {key: 'insights', icon: 'bar-chart-2', label: 'Statistik'}] as const).map(item => <AnimatedPressable key={item.key} accessibilityRole="button" accessibilityLabel={item.label} accessibilityState={{selected: tab === item.key}} onPress={() => item.key === 'plus' ? open('expense') : switchTab(item.key)} style={item.key === 'plus' ? s.navPlus : [s.navItem, tab === item.key && {backgroundColor: '#363C30'}]} scaleTo={item.key === 'plus' ? 0.86 : 0.9}><Icon name={item.icon} color={item.key === 'plus' ? c.ink : tab === item.key ? c.lime : '#B3BAA9'} size={21} /></AnimatedPressable>)}</View></View></SafeAreaView> : welcome}
-    <Modal visible={sheet !== null} transparent animationType="slide" statusBarTranslucent onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setSheet(null); }}><View style={[s.modalBackdrop, keyboardHeight > 0 && {justifyContent: 'flex-end', paddingBottom: keyboardHeight}]}><Pressable style={StyleSheet.absoluteFill} onPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setSheet(null); }} /><View style={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]}><View style={[s.between, {marginBottom: 13}]}><Text style={s.title}>{{expense: 'Catat pengeluaran', income: 'Catat pemasukan', need: 'Bikin rencana baru', attendance: 'Kehadiran kerja', settings: 'Ruang pribadi', setup: 'Kenalan dulu, yuk.', cloud: 'Sinkron perangkat', backup: 'Pulihkan cadangan'}[sheet ?? 'expense']}</Text><AnimatedPressable accessibilityLabel="Tutup" onPress={() => setSheet(null)} style={s.circle} scaleTo={0.88}><Icon name="x" /></AnimatedPressable></View><ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}>
+  const navBottom = Math.max(insets.bottom, 16);
+  const toastHost = editingNeed ? 'need' : sheet !== null ? 'sheet' : 'main';
+  const modalToastBottom = keyboardHeight > 0 ? keyboardHeight + 12 : navBottom + 8;
+  const closeToast = () => setToast(null);
+
+  return <View style={s.screen}>{started ?<SafeAreaView style={s.fill} edges={['top', 'left', 'right']}><Veiled veil={screenVeil} bg={c.pale} provide style={s.fill} targetStyle={s.fill}><Grid /><ScrollView contentContainerStyle={[s.content, {paddingBottom: 110 + insets.bottom}]} showsVerticalScrollIndicator={false}>{storageError && <Notice title="Periksa penyimpanan" text={storageError} icon="alert-circle" />}<CrossBlur k={tab} style={{gap: 16}}><View style={{gap: 16}}>{tab === 'home' ? home : tab === 'needs' ? needsScreen : tab === 'calendar' ? calendarScreen : insightsScreen}</View></CrossBlur></ScrollView></Veiled><MorphNav tab={tab} bottom={navBottom} homeRef={homeNavRef} onTab={switchTab} onAction={action => setTimeout(() => open(action), 120)} /></SafeAreaView> : welcome}
+    <FlyLayer />
+    <DialogHost />
+    <Toast toast={toastHost === 'main' ? toast : null} bottom={started ? navBottom + 60 + 12 : navBottom + 12} onClose={closeToast} />
+    <SheetModal visible={sheet !== null} onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setSheet(null); }} onBackdropPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setSheet(null); }} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'sheet' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={[s.between, {marginBottom: 13}]}><CrossBlur k={sheet ?? ''} mode="left" style={{flex: 1}}><Text style={s.title}>{{expense: 'Catat pengeluaran', income: 'Catat pemasukan', need: 'Bikin rencana baru', attendance: 'Kehadiran kerja', settings: 'Ruang pribadi', setup: 'Kenalan dulu, yuk.', cloud: 'Sinkron perangkat', backup: 'Pulihkan cadangan', daily: 'Ada uang sisa?', leftover: 'Uang Sisa', check: 'Cek sebelum beli', shopping: shopMode === 'buy' ? 'Lagi belanja' : 'Belanja bulanan', token: 'Token listrik', skip: 'Libur panjang'}[sheet ?? 'expense']}</Text></CrossBlur><AnimatedPressable accessibilityLabel="Tutup" onPress={() => setSheet(null)} style={s.circle}><Icon name="x" /></AnimatedPressable></View><ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><CrossBlur k={`${sheet === 'income' ? 'expense' : sheet}:${shopMode}`} parentVeil>
       {(sheet === 'expense' || sheet === 'income' || sheet === 'need') && <>
-        {sheet !== 'need' && <View style={[s.row, {gap: 8}]}><Chip label="Uang keluar" active={sheet === 'expense'} onPress={() => setSheet('expense')} /><Chip label="Uang masuk" active={sheet === 'income'} onPress={() => setSheet('income')} /></View>}
-        {sheet === 'income' && <Text style={[s.muted, {marginTop: 10}]}>{state.profile.payrollCycle === 'monthly' ? "Pemasukan kerja dicatat dari absensi. Jika mencatat gaji yang sudah cair, sertakan kata ‘gaji’ di namanya agar prediksi tidak menghitung dua kali." : 'Pemasukan kerja dicatat otomatis dari absensi. Gunakan ini untuk pemasukan lain.'}</Text>}
+        {sheet !== 'need' && <SegmentPills style={{gap: 8}} options={[{key: 'expense', label: 'Uang keluar'}, {key: 'income', label: 'Uang masuk'}] as const} value={sheet === 'income' ? 'income' : 'expense'} onChange={setSheet} />}
+        <Collapse visible={sheet === 'income' && working}><Text style={[s.muted, {marginTop: 10}]}>{state.profile.payrollCycle === 'monthly' ? "Pemasukan kerja dicatat dari absensi. Jika mencatat gaji yang sudah cair, sertakan kata ‘gaji’ di namanya agar prediksi tidak menghitung dua kali." : 'Pemasukan kerja dicatat otomatis dari absensi. Gunakan ini untuk pemasukan lain.'}</Text></Collapse>
         <Field label={sheet === 'need' ? 'NAMA KEBUTUHAN' : 'UNTUK APA?'} value={form.title} onChange={title => setForm({...form, title})} placeholder={sheet === 'need' ? 'Misal: bensin motor' : 'Misal: makan siang'} />
         <Field label="NOMINAL (RP)" value={form.amount} onChange={amount => setForm({...form, amount})} placeholder="25000" numeric />
         <Field label={sheet === 'need' ? 'TANGGAL DIBUTUHKAN (YYYY-MM-DD)' : 'TANGGAL (YYYY-MM-DD)'} value={form.date} onChange={date => setForm({...form, date})} />
-        {sheet !== 'need' && <View style={[s.row, {gap: 7, marginTop: 7, marginBottom: 3}]}><Chip label="Hari ini" active={form.date === today} onPress={() => setForm({...form, date: today})} /><Chip label="Kemarin" active={form.date === addDays(today, -1)} onPress={() => setForm({...form, date: addDays(today, -1)})} /><Chip label="2 hari lalu" active={form.date === addDays(today, -2)} onPress={() => setForm({...form, date: addDays(today, -2)})} /></View>}
-        {sheet === 'expense' && <><Text style={[s.fieldLabel, {marginTop: 17, marginBottom: 10}]}>KATEGORI</Text><View style={[s.row, {flexWrap: 'wrap', gap: 7}]}>{['Makan', 'Transportasi', 'Belanja', 'Mendadak', 'Lainnya'].map(category => <Chip key={category} label={category} active={form.category === category} onPress={() => setForm({...form, category})} />)}</View></>}
-        {sheet === 'need' && <><Text style={[s.fieldLabel, {marginTop: 17, marginBottom: 10}]}>JENIS KEBUTUHAN</Text><View style={[s.row, {gap: 7}]}>{[{key: 'recurring', label: 'Rutin'}, {key: 'debt', label: 'Utang'}, {key: 'goal', label: 'Tujuan'}].map(k => <Chip key={k.key} label={k.label} active={form.kind === k.key} onPress={() => setForm({...form, kind: k.key})} />)}</View>{form.kind === 'recurring' && <Field label="BERULANG SETIAP (HARI KALENDER)" value={form.interval} onChange={interval => setForm({...form, interval})} numeric />}<Field label="SUDAH DIALOKASIKAN DARI SALDO (RP)" value={form.saved} onChange={saved => setForm({...form, saved})} numeric /><Text style={[s.muted, {marginTop: 5}]}>Alokasi ini bagian dari saldo yang ada, bukan pemasukan tambahan.</Text><View style={[s.row, {gap: 7, marginTop: 15}]}><Chip label="Wajib" active={form.priority === 'essential'} onPress={() => setForm({...form, priority: 'essential'})} /><Chip label="Fleksibel" active={form.priority === 'flexible'} onPress={() => setForm({...form, priority: 'flexible'})} /></View></>}
+        {sheet !== 'need' && <SegmentPills style={{marginTop: 7, marginBottom: 3}} options={[{key: today, label: 'Hari ini'}, {key: addDays(today, -1), label: 'Kemarin'}, {key: addDays(today, -2), label: '2 hari lalu'}]} value={form.date} onChange={date => setForm({...form, date})} />}
+        <Collapse visible={sheet === 'expense'}><Text style={[s.fieldLabel, {marginTop: 17, marginBottom: 10}]}>KATEGORI</Text><SegmentPills wrap options={['Makan', 'Transportasi', 'Belanja', 'Mendadak', 'Lainnya'].map(key => ({key, label: key}))} value={form.category} onChange={category => setForm({...form, category})} /></Collapse>
+        {sheet === 'need' && <><Text style={[s.fieldLabel, {marginTop: 17, marginBottom: 10}]}>JENIS KEBUTUHAN</Text><SegmentPills options={[{key: 'recurring', label: 'Rutin'}, {key: 'debt', label: 'Utang'}, {key: 'goal', label: 'Tujuan'}]} value={form.kind} onChange={kind => setForm({...form, kind})} /><Collapse visible={Boolean(form.kind === 'recurring')}>{<Field label="BERULANG SETIAP (HARI KALENDER)" value={form.interval} onChange={interval => setForm({...form, interval})} numeric />}</Collapse><Field label="SUDAH DIALOKASIKAN DARI SALDO (RP)" value={form.saved} onChange={saved => setForm({...form, saved})} numeric /><Text style={[s.muted, {marginTop: 5}]}>Alokasi ini bagian dari saldo yang ada, bukan pemasukan tambahan.</Text><SegmentPills style={{marginTop: 15}} options={[{key: 'essential', label: 'Wajib'}, {key: 'flexible', label: 'Fleksibel'}]} value={form.priority} onChange={priority => setForm({...form, priority})} /></>}
+        <Collapse visible={sheet === 'expense'}>{(() => {const plan = leftoverPlan(number(form.amount || '0')); return <>
+          {plan.available && <View style={[s.row, {marginTop: 15, flexWrap: 'wrap'}]}><Chip label={`${plan.on ? '✓ ' : ''}Ambil dari Uang Sisa (${currency(Math.max(0, budget.leftoverPot))})`} active={plan.on} onPress={() => setUseLeftover(!plan.on)} /></View>}
+          {plan.on && plan.from > 0 && <Text style={[s.muted, {marginTop: 6}]}>{currency(plan.from)} diambil dari Uang Sisa, sisanya dari jatah.</Text>}
+          {plan.hint ? <Text style={[s.muted, {marginTop: 6}, plan.hint.startsWith('Uang wajib') && {color: c.red}]}>{plan.hint}</Text> : null}
+        </>;})()}</Collapse>
+        <Collapse visible={sheet === 'income' && budget.daysLeft <= 3}><View style={[s.row, {marginTop: 15, flexWrap: 'wrap'}]}><Chip label={`${forNextPeriod ? '✓ ' : ''}Untuk periode baru (mulai ${shortDate(addDays(budget.end, 1))})`} active={forNextPeriod} onPress={() => setForNextPeriod(!forNextPeriod)} /></View></Collapse>
+        {sheet === 'income' && forNextPeriod && budget.daysLeft <= 3 && <Text style={[s.muted, {marginTop: 6}]}>Uangnya disimpan dulu dan baru dihitung ke jatah jajan mulai {shortDate(addDays(budget.end, 1))}.</Text>}
         {formError && <Text style={s.error}>{formError}</Text>}<View style={{marginTop: 23}}><Button title={sheet === 'need' ? 'Simpan rencana' : 'Simpan transaksi'} onPress={saveForm} icon="check" /></View>
       </>}
-      {sheet === 'setup' && <><Text style={s.muted}>DanaSiap menghitung tabungan hanya di hari kamu kerja. Semua nominal dalam rupiah.</Text>
+      {sheet === 'setup' && <><Text style={s.muted}>{profile.working ? 'DanaSiap menghitung tabungan hanya di hari kamu kerja. Semua nominal dalam rupiah.' : 'Catat uang masuk dan keluar, DanaSiap bantu jaga kebutuhanmu. Semua nominal dalam rupiah.'}</Text>
         <View style={[s.row, {gap: 13, alignItems: 'center', marginTop: 14, marginBottom: 4}]}>
           <View style={[s.avatar, {width: 48, height: 48, borderRadius: 24, overflow: 'hidden'}]}>
             {profile.avatarUrl ? <Image source={{uri: profile.avatarUrl}} style={{width: 48, height: 48}} /> : <Text style={[s.avatarText, {fontSize: 22}]}>{(profile.name || 'D').slice(0, 1).toUpperCase()}</Text>}
@@ -793,10 +1213,144 @@ function DanaSiap() {
             {Boolean(profile.avatarUrl) && <View style={{flex: 1}}><Button title="Hapus foto" secondary icon="trash-2" onPress={removeAvatar} /></View>}
           </View>
         </View>
-        <Field label="NAMA PANGGILAN" value={profile.name} onChange={name => setProfile({...profile, name})} placeholder="Nama kamu" /><Field label="SALDO AWAL (RP)" value={profile.openingBalance} onChange={openingBalance => setProfile({...profile, openingBalance})} placeholder="Saldo sebelum transaksi yang dicatat" numeric /><Field label={profile.payrollCycle === 'monthly' ? "UPAH POKOK / HARI KERJA (RP)" : "PEMASUKAN PER HARI KERJA (RP)"} value={profile.dailyIncome} onChange={dailyIncome => setProfile({...profile, dailyIncome})} placeholder="70000" numeric /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>SISTEM PENERIMAAN GAJI</Text><View style={[s.row, {gap: 8}]}><Chip label="Harian" active={profile.payrollCycle === 'daily'} onPress={() => setProfile({...profile, payrollCycle: 'daily'})} /><Chip label="Bulanan (Payroll)" active={profile.payrollCycle === 'monthly'} onPress={() => setProfile({...profile, payrollCycle: 'monthly'})} /></View>{profile.payrollCycle === 'monthly' && <Field label="TANGGAL GAJIAN BULANAN (1-28)" value={profile.payday} onChange={payday => setProfile({...profile, payday})} placeholder="5" numeric />}<Field label="TUNJANGAN AKTIVITAS (UANG SAKU CASH / HARI AKTIF)" value={profile.activityAllowance} onChange={activityAllowance => setProfile({...profile, activityAllowance})} placeholder="0" numeric /><Text style={[s.muted, {marginTop: 4}]}>Diberikan cash langsung di tangan pada hari aktif. Libur = Rp 0.</Text><Field label="ANGGARAN HARIAN RUTIN (RP) — OPSIONAL" value={profile.dailyBudget} onChange={dailyBudget => setProfile({...profile, dailyBudget})} placeholder="0" numeric /><Text style={[s.muted, {marginTop: 6}]}>Boleh isi 0 jika pengeluaran harian fleksibel/dadakan. Cukup dicatat langsung saat jajan/makan. Kebutuhan berkala (ganti oli, kuota, dll.) dicatat di Rencana Kebutuhan.</Text><Text style={[s.fieldLabel, {marginTop: 19, marginBottom: 10}]}>BIASANYA KERJA HARI APA?</Text><View style={[s.row, {flexWrap: 'wrap', gap: 6}]}>{weekdays.map((day, i) => <Chip key={day} label={day} active={profile.workDays.includes(i)} onPress={() => setProfile({...profile, workDays: profile.workDays.includes(i) ? profile.workDays.filter(d => d !== i) : [...profile.workDays, i]})} />)}</View><Text style={[s.muted, {marginTop: 10}]}>Tanggal merah mengikuti pilihanmu. Tandai libur tambahan lewat kalender.</Text>{formError && <Text style={s.error}>{formError}</Text>}<View style={{marginTop: 23}}><Button title={started ? 'Simpan pengaturan' : 'Siap, mulai rencanakan'} onPress={saveProfile} icon="arrow-up-right" /></View></>}
+        <Field label="NAMA PANGGILAN" value={profile.name} onChange={name => setProfile({...profile, name})} placeholder="Nama kamu" /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>APAKAH KAMU BEKERJA?</Text><SegmentPills style={{gap: 8}} options={[{key: 'yes', label: 'Bekerja'}, {key: 'no', label: 'Tidak bekerja'}] as const} value={profile.working ? 'yes' : 'no'} onChange={v => setProfile({...profile, working: v === 'yes'})} /><Collapse visible={Boolean(!profile.working)}>{<Text style={[s.muted, {marginTop: 6}]}>Absensi, gajian, dan hari kerja disembunyikan. Pemasukan dicatat lewat Uang masuk.</Text>}</Collapse><Field label="SALDO AWAL (RP)" value={profile.openingBalance} onChange={openingBalance => setProfile({...profile, openingBalance})} placeholder="Saldo sebelum transaksi yang dicatat" numeric /><Collapse visible={Boolean(profile.working)}>{<><Field label={profile.payrollCycle === 'monthly' ? "UPAH POKOK / HARI KERJA (RP)" : "PEMASUKAN PER HARI KERJA (RP)"} value={profile.dailyIncome} onChange={dailyIncome => setProfile({...profile, dailyIncome})} placeholder="70000" numeric /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>SISTEM PENERIMAAN GAJI</Text><SegmentPills style={{gap: 8}} options={[{key: 'daily', label: 'Harian'}, {key: 'monthly', label: 'Bulanan (Payroll)'}] as const} value={profile.payrollCycle} onChange={payrollCycle => setProfile({...profile, payrollCycle})} /><Collapse visible={Boolean(profile.payrollCycle === 'monthly')}>{<Field label="TANGGAL GAJIAN BULANAN (1-28)" value={profile.payday} onChange={payday => setProfile({...profile, payday})} placeholder="5" numeric />}</Collapse><Field label="TUNJANGAN AKTIVITAS (UANG SAKU CASH / HARI AKTIF)" value={profile.activityAllowance} onChange={activityAllowance => setProfile({...profile, activityAllowance})} placeholder="0" numeric /><Text style={[s.muted, {marginTop: 4}]}>Diberikan cash langsung di tangan pada hari aktif. Libur = Rp 0.</Text></>}</Collapse><Field label="SEBULAN MULAI TANGGAL (1-28)" value={profile.periodStartDay} onChange={periodStartDay => setProfile({...profile, periodStartDay})} placeholder="1" numeric /><Text style={[s.muted, {marginTop: 6}]}>Misal uang bulanan masuk tanggal 25, isi 26: jatah jajan dihitung 26 sampai 25 bulan berikutnya.</Text>
+        <Text style={[s.fieldLabel, {marginTop: 19, marginBottom: 4}]}>PENGELUARAN HARIAN</Text><Text style={s.muted}>Tercatat otomatis tiap hari terjadwal. Tandai kalau nggak dipakai. Contoh: ongkos anak, uang masak. Kebutuhan berkala (ganti oli, kuota, dll.) dicatat di Rencana Kebutuhan.</Text>
+        {dailyDraft.map((item, index) => <View key={item.id} style={[s.section, {marginTop: 12, gap: 0, padding: 14}]}>
+          <View style={s.between}><Text style={s.listTitle}>{item.title.trim() || `Pengeluaran ${index + 1}`}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel={`Hapus ${item.title.trim() || 'pengeluaran harian'}`} onPress={() => setDailyDraft(list => list.filter(d => d.id !== item.id))} style={s.tinyButton}><Text style={s.actionLabel}>Hapus</Text></AnimatedPressable></View>
+          <Field label="NAMA" value={item.title} onChange={title => editDaily(item.id, {title})} placeholder="Misal: Ongkos Anak A" />
+          <Field label="NOMINAL PER HARI (RP)" value={item.amount} onChange={amount => editDaily(item.id, {amount})} placeholder="50.000" numeric />
+          <Text style={[s.fieldLabel, {marginTop: 14, marginBottom: 8}]}>HARI</Text>
+          <View style={[s.row, {flexWrap: 'wrap', gap: 6}]}>{weekdays.map((day, i) => <Chip key={day} label={day} active={item.days.includes(i)} onPress={() => editDaily(item.id, {days: item.days.includes(i) ? item.days.filter(d => d !== i) : [...item.days, i]})} />)}</View>
+          <View style={[s.row, {marginTop: 10}]}><Chip label={item.skipHolidays ? '✓ Libur di tanggal merah' : 'Tetap jalan di tanggal merah'} active={item.skipHolidays} onPress={() => editDaily(item.id, {skipHolidays: !item.skipHolidays})} /></View>
+        </View>)}
+        <View style={{marginTop: 12}}><Button title="Tambah pengeluaran harian" secondary icon="plus" onPress={() => setDailyDraft(list => [...list, {id: uid(), title: '', amount: '', days: [0, 1, 2, 3, 4, 5, 6], skipHolidays: true}])} /></View><Collapse visible={Boolean(profile.working)}>{<><Text style={[s.fieldLabel, {marginTop: 19, marginBottom: 10}]}>BIASANYA KERJA HARI APA?</Text><View style={[s.row, {flexWrap: 'wrap', gap: 6}]}>{weekdays.map((day, i) => <Chip key={day} label={day} active={profile.workDays.includes(i)} onPress={() => setProfile({...profile, workDays: profile.workDays.includes(i) ? profile.workDays.filter(d => d !== i) : [...profile.workDays, i]})} />)}</View><Text style={[s.muted, {marginTop: 10}]}>Tanggal merah mengikuti pilihanmu. Tandai libur tambahan lewat kalender.</Text></>}</Collapse>{formError && <Text style={s.error}>{formError}</Text>}<View style={{marginTop: 23}}><Button title={started ? 'Simpan pengaturan' : 'Siap, mulai rencanakan'} onPress={saveProfile} icon="arrow-up-right" /></View></>}
+      {sheet === 'daily' && (() => {
+        const item = (state.dailyItems ?? []).find(i => i.id === leftoverTarget?.itemId);
+        if (!item || !leftoverTarget) return <Text style={s.muted}>Pengeluaran harian tidak ditemukan.</Text>;
+        const amount = number(leftoverInput || '0');
+        return <>
+          <Text style={s.muted}>{item.title} · {shortDate(leftoverTarget.date)} · rencana {currency(item.amount)}. Isi uang yang nggak kepakai, nanti masuk Uang Sisa.</Text>
+          <Field label="UANG YANG NGGAK KEPAKAI (RP)" value={leftoverInput} onChange={setLeftoverInput} placeholder="20.000" numeric />
+          <SegmentPills wrap stagger style={{marginTop: 11}} options={[{key: 'all', label: 'Semua'}, {key: 'half', label: 'Separuh'}, {key: 'none', label: 'Nggak ada sisa'}] as const} value={amount === item.amount ? 'all' : amount > 0 && amount === Math.floor(item.amount / 2) ? 'half' : amount === 0 ? 'none' : null} onChange={v => setLeftoverInput(v === 'all' ? formatThousands(item.amount) : v === 'half' ? formatThousands(Math.floor(item.amount / 2)) : '')} />
+          <Collapse visible={amount > 0 && amount <= item.amount}><Appear visible={amount > 0 && amount <= item.amount}><Text style={[s.muted, {marginTop: 10}]}>Terpakai {currency(item.amount - amount)} · +{currency(amount)} ke Uang Sisa.</Text></Appear></Collapse>
+          {formError && <Text style={s.error}>{formError}</Text>}
+          <View style={{marginTop: 23}}><Button title="Simpan sisa" onPress={e => saveDailyLeftover(e)} icon="check" /></View>
+        </>;
+      })()}
+      {sheet === 'leftover' && <View style={{gap: 12}}>
+        <RollingValue value={currency(heldPot ?? Math.max(0, budget.leftoverPot))} bg={c.pale} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {fontSize: 34}]} />
+        <Text style={s.muted}>Uang rencana yang nggak terpakai periode {shortDate(budget.start)} – {shortDate(budget.end)}. Uangnya tetap di tanganmu, dipisah dari jatah jajan.</Text>
+        <Button title="Pakai Uang Sisa" icon="arrow-up-right" disabled={budget.leftoverPot <= 0} onPress={() => {open('expense'); setUseLeftover(true);}} />
+        <View style={s.section}>
+          <SectionHead title="Periode ini" />
+          {budget.leftovers.length ? budget.leftovers.map(l => <Appear key={l.id} style={[s.between, {gap: 12}]}><View style={{flex: 1, gap: 3}}><Text style={s.listTitle}>{l.title}</Text><Text style={s.mini}>{shortDate(l.date)}</Text></View><Text style={s.amount}>+{currency(l.amount)}</Text></Appear>) : <Text style={s.muted}>Belum ada uang sisa periode ini.</Text>}
+          {budget.leftoverUsed > 0 && <><View style={s.divider} /><View style={s.between}><Text style={s.listTitle}>Sudah dipakai</Text><Text style={s.amount}>−{currency(budget.leftoverUsed)}</Text></View></>}
+        </View>
+        <View style={s.section}>
+          <SectionHead title="Periode sebelumnya" />
+          {history.length ? history.map(h => <View key={h.start} style={{gap: 3}}><View style={[s.between, {gap: 12}]}><Text style={[s.listTitle, {flex: 1}]}>Sisa {shortDate(h.start)} – {shortDate(h.end)}</Text><Text style={s.amount}>{currency(h.leftover)}</Text></View><Text style={s.mini}>Uang saat periode ditutup {currency(h.endingMoney)}</Text></View>) : <Text style={s.muted}>Riwayat muncul setelah periode pertama selesai.</Text>}
+        </View>
+      </View>}
+      {sheet === 'check' && (() => {
+        const amount = number(checkAmount || '0');
+        const result = amount > 0 ? checkPurchase(budget, amount) : null;
+        const notice = !result ? null : result.verdict === 'jatah' ? {title: 'Aman', text: 'Aman, masih masuk jatah hari ini.', icon: 'check-circle' as IconName}
+          : result.verdict === 'sisa' ? {title: 'Aman pakai Uang Sisa', text: `Aman: ${result.fromAllowance > 0 ? `${currency(result.fromAllowance)} dari jatah hari ini + ` : ''}${currency(result.fromLeftover)} dari Uang Sisa (Uang Sisa tinggal ${currency(result.leftoverAfter)}).`, icon: 'archive' as IconName}
+          : result.verdict === 'turun' ? {title: 'Bisa, tapi hati-hati', text: `Bisa, tapi jatah jajan turun jadi ${currency(result.perDayAfter)}/hari sampai ${shortDate(budget.end)}.`, icon: 'trending-down' as IconName}
+          : {title: 'Jangan dulu', text: `Jangan dulu, uang wajib jadi kurang ${currency(result.shortfall)}.`, icon: 'alert-octagon' as IconName};
+        return <>
+          <Text style={s.muted}>Jatah jajan hari ini {currency(Math.max(0, budget.leftToday))}{budget.leftoverPot > 0 ? ` · Uang Sisa ${currency(budget.leftoverPot)}` : ''}.</Text>
+          <Field label="HARGA BARANG (RP)" value={checkAmount} onChange={setCheckAmount} placeholder="50.000" numeric />
+          <Collapse visible={Boolean(notice)}><Appear visible={Boolean(notice)} bg={c.pale} radius={18} style={{marginTop: 16}}>{notice && <CrossBlur k={notice.title}><PopIn trigger={notice.title}><Notice title={notice.title} text={notice.text} icon={notice.icon} /></PopIn></CrossBlur>}</Appear></Collapse>
+          {result && result.verdict !== 'bahaya' && <Appear style={{marginTop: 16}}><Button title="Jadi beli, catat pengeluaran" icon="arrow-up-right" onPress={() => {const value = checkAmount; open('expense'); setForm(f => ({...f, amount: value}));}} /></Appear>}
+        </>;
+      })()}
+      {sheet === 'shopping' && shopMode === 'edit' && <>
+        <Text style={s.muted}>Daftar belanja rutin tiap periode. Totalnya otomatis jadi kebutuhan wajib "Belanja bulanan". Tandai "Masih ada" kalau stoknya belum habis.</Text>
+        {shopDraft.map((item, index) => <View key={item.id} style={[s.section, {marginTop: 12, gap: 0, padding: 14}, item.skip && {opacity: .75}]}>
+          <View style={[s.between, {gap: 10}]}><Text style={[s.listTitle, {flex: 1}]}>{item.name.trim() || `Barang ${index + 1}`}</Text><Text style={s.mini}>{item.skip ? 'Skip periode ini' : currency(shopLine(item))}</Text></View>
+          <Field label="NAMA BARANG" value={item.name} onChange={name => editShop(item.id, {name})} placeholder="Misal: Beras 5 kg" />
+          <View style={[s.row, {gap: 10, alignItems: 'flex-start'}]}><View style={{flex: 1}}><Field label="JUMLAH" value={item.qty} onChange={qty => editShop(item.id, {qty})} placeholder="1" decimal /></View><View style={{flex: 2}}><Field label="HARGA SATUAN (RP)" value={item.price} onChange={price => editShop(item.id, {price})} numeric /></View></View>
+          <View style={[s.row, {gap: 10, marginTop: 12, alignItems: 'center'}]}><AnimatedPressable accessibilityRole="button" accessibilityLabel={item.image ? `Ganti foto ${item.name || 'barang'}` : `Tambah foto ${item.name || 'barang'}`} onPress={() => chooseShopImage(item.id)} style={{width: 56, height: 56, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderStyle: item.image ? 'solid' : 'dashed', borderColor: '#C9D5B4', backgroundColor: '#F6F9EF', alignItems: 'center', justifyContent: 'center'}}>{item.image ? <Image source={{uri: item.image}} style={{width: 56, height: 56}} /> : <Icon name="camera" size={20} color={c.muted} />}</AnimatedPressable><Text style={[s.mini, {flex: 1}]}>{item.image ? 'Ketuk foto untuk ganti' : 'Tambah foto biar gampang dicari di toko'}</Text>{item.image && <TinyButton label="Hapus foto" onPress={() => editShop(item.id, {image: undefined})} />}</View>
+          <View style={[s.row, {gap: 7, marginTop: 10, flexWrap: 'wrap'}]}><Chip label={item.skip ? '✓ Masih ada' : 'Masih ada'} active={item.skip} onPress={() => editShop(item.id, {skip: !item.skip})} /><TinyButton label="Hapus" onPress={() => setShopDraft(list => list.filter(d => d.id !== item.id))} /></View>
+        </View>)}
+        <View style={{marginTop: 12}}><Button title="Tambah barang" secondary icon="plus" onPress={() => setShopDraft(list => [...list, {id: uid(), name: '', qty: '1', price: '', skip: false, bought: false}])} /></View>
+        <View style={[s.between, {marginTop: 16}]}><Text style={s.listTitle}>Total belanja</Text><RollingValue align="right" bg={c.pale} value={currency(shopDraft.filter(d => !d.skip).reduce((sum, d) => sum + shopLine(d), 0))} style={s.amount} /></View>
+        <Field label="TANGGAL BELANJA (1-28)" value={shopDueDay} onChange={setShopDueDay} placeholder="1" numeric />
+        {state.shopping?.items.length ? <Text style={[s.muted, {marginTop: 6}]}>Jadwal belanja berikutnya {shortDate(shoppingDueDate(state, today))}.</Text> : null}
+        {formError && <Text style={s.error}>{formError}</Text>}
+        <View style={{gap: 10, marginTop: 23}}><Button title="Simpan daftar" icon="check" onPress={() => saveShopping()} /><Button title="Mulai belanja" secondary icon="shopping-cart" onPress={() => saveShopping(true)} /></View>
+      </>}
+      {sheet === 'shopping' && shopMode === 'buy' && (() => {
+        const active = state.needs.find(n => isShoppingNeed(n) && !n.paid);
+        const planned = active ? remainingAmount(active) : shoppingTotal(state.shopping);
+        const inCart = shopDraft.filter(d => !d.skip && d.bought).reduce((sum, d) => sum + shopLine(d), 0);
+        return <>
+          <Text style={s.muted}>Centang barang yang sudah masuk keranjang. Ubah harga atau jumlah kalau beda dari rencana, harga baru dipakai untuk periode depan.</Text>
+          {shopDraft.filter(d => !d.skip).map(item => <View key={item.id} style={[s.section, {marginTop: 12, gap: 0, padding: 14}]}>
+            <AnimatedPressable accessibilityRole="checkbox" accessibilityLabel={item.name} accessibilityState={{checked: item.bought}} onPress={() => editShop(item.id, {bought: !item.bought})} style={[s.row, {gap: 10}]}><PopIn trigger={item.bought}><Icon name={item.bought ? 'check-square' : 'square'} size={20} /></PopIn>{item.image && <Image source={{uri: item.image}} style={{width: 40, height: 40, borderRadius: 10}} />}<Text style={[s.listTitle, {flex: 1}, item.bought && {textDecorationLine: 'line-through', color: c.muted}]}>{item.name}</Text><Text style={[s.amount, !item.bought && {color: c.muted}]}>{currency(shopLine(item))}</Text></AnimatedPressable>
+            <View style={[s.row, {gap: 10, alignItems: 'flex-start'}]}><View style={{flex: 1}}><Field label="JUMLAH" value={item.qty} onChange={qty => editShop(item.id, {qty})} placeholder="1" decimal /></View><View style={{flex: 2}}><Field label="HARGA SATUAN (RP)" value={item.price} onChange={price => editShop(item.id, {price})} numeric /></View></View>
+          </View>)}
+          {!shopDraft.some(d => !d.skip) && <Empty text="Belum ada barang yang perlu dibeli. Atur daftar dulu." />}
+          <View style={[s.section, {marginTop: 12, gap: 7}]}>
+            {line('Rencana', currency(planned))}
+            {line('Sudah di keranjang', currency(inCart), true)}
+            <CrossBlur k={inCart <= planned ? 'under' : 'over'} mode="left"><Text style={[s.mini, inCart > planned && {color: c.red}]}>{inCart <= planned ? `Masih di bawah rencana ${currency(planned - inCart)}` : `Lebih ${currency(inCart - planned)} dari rencana`}</Text></CrossBlur>
+          </View>
+          {formError && <Text style={s.error}>{formError}</Text>}
+          <View style={{gap: 10, marginTop: 23}}><Button title="Selesai belanja" icon="check" disabled={!shopDraft.some(d => d.bought && !d.skip)} onPress={e => finishShopping(e)} /><Button title="Kembali ke daftar" secondary icon="edit-2" onPress={() => {setFormError(''); setShopMode('edit');}} /></View>
+        </>;
+      })()}
+      {sheet === 'token' && <View style={{gap: 12}}>
+        <View style={[s.section, {gap: 8}]}>
+          {electricity.costPerDay === undefined ? <Text style={s.muted}>Catat minimal 2 kali beli token (atau cek meteran 2 kali) supaya perkiraan muncul.</Text> : <>
+            {electricity.typicalAmount > 0 && electricity.daysPerPurchase ? <Text style={s.heading}>{currency(electricity.typicalAmount)} tahan ± {Math.round(electricity.daysPerPurchase)} hari</Text> : null}
+            {line('± per hari', currency(electricity.costPerDay))}
+            {electricity.monthlyCost !== undefined && line('± per bulan', currency(electricity.monthlyCost))}
+            {electricity.kwhPerDay !== undefined && line('± kWh per hari', `${kwhText(electricity.kwhPerDay)} kWh`)}
+            {electricity.remainingKwh !== undefined && line('Sisa kWh (perkiraan)', `${kwhText(electricity.remainingKwh)} kWh`)}
+            {electricity.nextPurchaseDate && line('Perkiraan habis', shortDate(electricity.nextPurchaseDate))}
+          </>}
+          {electricity.target && electricity.costPerDay !== undefined && <Text style={[s.body, {lineHeight: 18}, electricity.target.overBudget > 0 && {color: c.red}]}>{electricity.target.overBudget > 0 ? `Lebih ${currency(electricity.target.overBudget)} dari jatah. Supaya pas: ${electricity.target.kwhPerDay !== undefined ? `maksimal ± ${kwhText(electricity.target.kwhPerDay)} kWh/hari${electricity.kwhPerDay !== undefined ? ` (sekarang ± ${kwhText(electricity.kwhPerDay)})` : ''}${electricity.target.saveKwhPerDay ? ` → hemat ± ${kwhText(electricity.target.saveKwhPerDay)} kWh/hari` : ''}` : `maksimal ± ${currency(electricity.target.costPerDay)}/hari`}` : '✓ Masih dalam jatah'}</Text>}
+        </View>
+        <View style={s.section}>
+          <SectionHead title="Beli token" />
+          <Field label="NOMINAL (RP)" value={tokenAmount} onChange={setTokenAmount} placeholder="100.000" numeric />
+          <Field label="KWH DARI STRUK (OPSIONAL)" value={tokenKwh} onChange={setTokenKwh} placeholder="Misal: 67,8" decimal />
+          <Text style={s.muted}>Dicatat hari ini sebagai pengeluaran Token listrik.</Text>
+          <Button title="Catat beli token" icon="zap" onPress={buyToken} />
+        </View>
+        <View style={s.section}>
+          <SectionHead title="Cek meteran" />
+          <Field label="SISA KWH DI METERAN" value={meterKwh} onChange={setMeterKwh} placeholder="Misal: 42,5" decimal />
+          <Button title="Simpan meteran hari ini" secondary icon="activity" onPress={saveMeter} />
+        </View>
+        <View style={s.section}>
+          <SectionHead title="Pengaturan" />
+          <Field label="JATAH LISTRIK PER BULAN (RP)" value={elecBudget} onChange={setElecBudget} placeholder="Opsional" numeric />
+          <Text style={s.fieldLabel}>DAYA LISTRIK</Text>
+          <SegmentPills wrap stagger style={{gap: 6}} options={Object.keys(TOKEN_TARIFF).map(Number).map(va => ({key: va, label: `${va} VA`}))} value={elecPower} onChange={va => setElecPower(elecPower === va ? undefined : va)} />
+          <Text style={s.muted}>Daya cuma dipakai kalau struk nggak mencantumkan kWh.</Text>
+          <Button title="Simpan pengaturan listrik" secondary icon="sliders" onPress={saveElectricitySettings} />
+        </View>
+        <View style={s.section}>
+          <SectionHead title="Riwayat beli token" />
+          {state.electricity?.purchases.length ? [...state.electricity.purchases].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12).map(p => <Appear key={p.id} style={s.between}><View style={{gap: 3}}><Text style={s.listTitle}>{shortDate(p.date)}</Text>{p.kwh ? <Text style={s.mini}>{kwhText(p.kwh)} kWh</Text> : null}</View><Text style={s.amount}>{currency(p.amount)}</Text></Appear>) : <Text style={s.muted}>Belum ada pembelian token.</Text>}
+        </View>
+      </View>}
+      {sheet === 'skip' && <>
+        <Text style={s.muted}>Misal anak libur sekolah. Semua hari terjadwal di rentang ini ditandai nggak dipakai, uangnya masuk Uang Sisa di tiap harinya.</Text>
+        <Text style={[s.fieldLabel, {marginTop: 16, marginBottom: 8}]}>PENGELUARAN</Text>
+        <SegmentPills wrap style={{gap: 6}} options={(state.dailyItems ?? []).map(item => ({key: item.id, label: item.title}))} value={skipItem} onChange={setSkipItem} />
+        <Field label="DARI (YYYY-MM-DD)" value={skipFrom} onChange={setSkipFrom} />
+        <Field label="SAMPAI (YYYY-MM-DD)" value={skipTo} onChange={setSkipTo} />
+        <SegmentPills wrap style={{marginTop: 11}} options={[{key: 6, label: '1 minggu'}, {key: 13, label: '2 minggu'}, {key: 29, label: '1 bulan'}]} value={[6, 13, 29].find(days => {try {return skipTo === addDays(skipFrom.trim(), days);} catch {return false;}})} onChange={days => {try {setSkipTo(addDays(skipFrom.trim(), days));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} />
+        {formError && <Text style={s.error}>{formError}</Text>}
+        <View style={{marginTop: 23}}><Button title="Tandai libur" onPress={e => saveSkip(e)} icon="sun" /></View>
+      </>}
       {sheet === 'attendance' && <>
-        <Text style={s.muted}>{shortDate(selectedDay)} · kehadiran dapat dikoreksi tanpa menggandakan pemasukan.</Text>
-        <View style={{gap: 10, marginTop: 16}}>
+        <Text style={s.muted}>{shortDate(selectedDay)} · hari kerja otomatis tercatat masuk. Pilih status lain kalau nggak masuk, dan pemasukannya ikut dikoreksi.</Text>
+        <StaggerList style={{gap: 10, marginTop: 16}}>
           {([{key: 'present', label: 'Masuk kerja'}, {key: 'absent', label: 'Tidak masuk'}, {key: 'half', label: 'Setengah hari'}, {key: 'holiday', label: 'Libur terjadwal'}] as const).map(option => (
             <AnimatedPressable
               accessibilityRole="button"
@@ -815,15 +1369,15 @@ function DanaSiap() {
                   setAttIncome('0');
                 }
               }}
-              style={[s.between, {padding: 15, backgroundColor: attStatus === option.key ? c.lime : c.white, borderRadius: 14}]}
-              scaleTo={0.97}
+              style={[s.between, {padding: 15, backgroundColor: c.white, borderRadius: 14}]}
             >
+              <FadeBg on={attStatus === option.key} color={c.lime} radius={14} />
               <Text style={s.body}>{option.label}</Text>
-              <Icon name={attStatus === option.key ? 'check-circle' : 'circle'} size={18} />
+              <PopIn trigger={attStatus === option.key}><Icon name={attStatus === option.key ? 'check-circle' : 'circle'} size={18} /></PopIn>
             </AnimatedPressable>
           ))}
-        </View>
-        {(attStatus === 'present' || attStatus === 'half') && (
+        </StaggerList>
+        <Collapse visible={Boolean((attStatus === 'present' || attStatus === 'half'))}>{(
           <Field
             label={attStatus === 'half' ? "UPAH YANG DITERIMA HARI INI (RP)" : "PEMASUKAN AKTUAL (RP) — BOLEH TERMASUK LEMBUR"}
             value={attIncome}
@@ -833,8 +1387,8 @@ function DanaSiap() {
             }}
             numeric
           />
-        )}
-        {attStatus === 'half' && (
+        )}</Collapse>
+        <Collapse visible={Boolean(attStatus === 'half')}>{(
           <View style={{marginTop: 12, gap: 8}}>
             <Text style={s.fieldLabel}>PILIHAN POTONGAN GAJI SETENGAH HARI</Text>
             <View style={[s.row, {flexWrap: 'wrap', gap: 6}]}>
@@ -873,8 +1427,8 @@ function DanaSiap() {
             </View>
             <Text style={s.muted}>Atau ketik nominal rupiah bebas di atas.</Text>
           </View>
-        )}
-        {attStatus === 'half' && Boolean(state.profile.activityAllowance) && (
+        )}</Collapse>
+        <Collapse visible={Boolean(attStatus === 'half' && Boolean(state.profile.activityAllowance))}>{(
           <View style={{marginTop: 14, gap: 8}}>
             <Field
               label="UANG SAKU CASH DITERIMA (RP)"
@@ -930,24 +1484,24 @@ function DanaSiap() {
             </View>
             <Text style={s.muted}>Atau ketik nominal rupiah bebas di atas.</Text>
           </View>
-        )}
+        )}</Collapse>
         {selectedDay > today && (
           <Text style={[s.muted, {marginTop: 12}]}>Tanggal mendatang adalah rencana kehadiran. Pemasukan belum dianggap sebagai uang yang sudah diterima.</Text>
         )}
-        {(attStatus === 'absent' || attStatus === 'holiday') && (
+        <Collapse visible={Boolean((attStatus === 'absent' || attStatus === 'holiday'))}>{(
           <View style={{marginTop: 16}}>
             <Notice
               title="Dampak pada rencana"
               text={`${selectedWorkday ? `Prediksi kekurangan: ${currency(absence.shortfall)}. ` : 'Hari ini sudah diprediksi tanpa pemasukan. '}Kebutuhan rutin dan pengeluaran tetap dihitung.`}
             />
           </View>
-        )}
+        )}</Collapse>
         {formError && <Text style={s.error}>{formError}</Text>}
         <View style={{marginTop: 23}}>
           <Button title="Simpan kehadiran" onPress={recordAttendance} icon="check" />
         </View>
       </>}
-      {sheet === 'settings' && <View style={{gap: 14}}>
+      {sheet === 'settings' && <StaggerList style={{gap: 14}}>
         <View style={[s.row, {gap: 13, paddingVertical: 10}]}>
           <View style={[s.avatar, {width: 52, height: 52, borderRadius: 26, overflow: 'hidden'}]}>
             {state.profile.avatarUrl ? <Image source={{uri: state.profile.avatarUrl}} style={{width: 52, height: 52}} /> : <Text style={[s.avatarText, {fontSize: 26}]}>{state.profile.name.slice(0, 1).toUpperCase() || 'D'}</Text>}
@@ -963,16 +1517,16 @@ function DanaSiap() {
           </View>
           {Boolean(state.profile.avatarUrl) && <View style={{flex: 1}}><Button title="Hapus foto" secondary icon="trash-2" onPress={removeAvatar} /></View>}
         </View>
-        <Button title="Profil, pemasukan & hari kerja" secondary icon="sliders" onPress={() => open('setup')} />
-        <Button title={reminders ? 'Matikan pengingat perangkat' : 'Aktifkan pengingat kebutuhan'} secondary icon="bell" disabled={demo} onPress={async () => {if (reminders) {setReminders(false); persist(state, demo, false);} else {try {const granted = await enableReminders(); if (granted) {setReminders(true); persist(state, demo, true);} else Alert.alert('Izin notifikasi belum aktif', 'Aktifkan notifikasi DanaSiap di pengaturan Android.');} catch {Alert.alert('Pengingat belum aktif', 'Coba lagi setelah membuka pengaturan notifikasi Android.');}}}} />
-        <Text style={s.muted}>{demo ? 'Pengingat dinonaktifkan pada data contoh.' : 'Pengingat untuk 20 kebutuhan aktif dan 7 hari kerja ke depan. Buka aplikasi berkala agar jadwal diperbarui.'}</Text>
+        <Button title={working ? 'Profil, pemasukan & hari kerja' : 'Profil & saldo'} secondary icon="sliders" onPress={() => open('setup')} />
+        <Button title={reminders ? 'Matikan pengingat perangkat' : 'Aktifkan pengingat kebutuhan'} secondary icon="bell" disabled={demo} onPress={async () => {if (reminders) {setReminders(false); persist(state, demo, false); notify('Pengingat perangkat dimatikan.');} else {try {const granted = await enableReminders(); if (granted) {setReminders(true); persist(state, demo, true); notify('Pengingat kebutuhan aktif.');} else notify('Izin notifikasi belum aktif. Aktifkan notifikasi DanaSiap di pengaturan Android.', 'error');} catch {notify('Pengingat belum aktif. Coba lagi setelah membuka pengaturan notifikasi Android.', 'error');}}}} />
+        <Text style={s.muted}>{demo ? 'Pengingat dinonaktifkan pada data contoh.' : 'Pengingat untuk 20 kebutuhan aktif. Buka aplikasi berkala agar jadwal diperbarui.'}</Text>
         <Button title="Akun & sinkron web" secondary icon="cloud" onPress={() => open('cloud')} />
         <Button title="Salin cadangan ke clipboard" secondary icon="copy" onPress={copyBackupToClipboard} />
         <Button title="Bagikan cadangan JSON" secondary icon="share-2" onPress={shareBackupJson} />
         <Button title="Pulihkan cadangan" secondary icon="upload" onPress={() => {setBackupText(''); setBackupPreview(null); open('backup');}} />
-        {demo && <Button title="Mulai dengan data pribadi" icon="arrow-up-right" onPress={() => Alert.alert('Mulai data pribadi?', 'Data contoh akan diganti dengan rencana kosong.', [{text: 'Batal', style: 'cancel'}, {text: 'Mulai', onPress: () => {const fresh = defaultState(today); setDemo(false); persist(fresh, false, false); setProfile({name: '', dailyIncome: '', dailyBudget: '', openingBalance: '', workDays: [1, 2, 3, 4, 5, 6], activityAllowance: '', payrollCycle: 'daily', payday: '5', avatarUrl: undefined}); setSheet('setup'); setTab('home');}}])} />}
+        {demo && <Button title="Mulai dengan data pribadi" icon="arrow-up-right" onPress={() => showDialog('Mulai data pribadi?', 'Data contoh akan diganti dengan rencana kosong.', [{text: 'Batal', style: 'cancel'}, {text: 'Mulai', onPress: () => {const fresh = defaultState(today); setDemo(false); persist(fresh, false, false); setProfile({name: '', dailyIncome: '', periodStartDay: '1', openingBalance: '', workDays: [1, 2, 3, 4, 5, 6], activityAllowance: '', payrollCycle: 'daily', payday: '5', avatarUrl: undefined, working: true}); setDailyDraft([]); setSheet('setup'); setTab('home'); notify('Data contoh dihapus. Isi profilmu untuk mulai.');}}])} />}
         <Text style={[s.muted, {textAlign: 'center', marginTop: 10}]}>DanaSiap 1.0 · Rupiah · Asia/Jakarta{`\n`}Angka prediksi mengikuti data yang kamu masukkan.</Text>
-      </View>}
+      </StaggerList>}
       {sheet === 'backup' && <View style={{gap: 14}}>
         <Text style={s.muted}>Pulihkan data dari cadangan JSON DanaSiap. Kamu bisa langsung menempel dari clipboard perangkat atau mengetik manual.</Text>
         <Button
@@ -998,23 +1552,26 @@ function DanaSiap() {
                   needsCount: valid.needs.length,
                   validState: valid,
                 });
+                notify('Cadangan ditempel dan valid. Cek ringkasannya sebelum dipulihkan.');
               } catch {
                 setBackupPreview(null);
                 setFormError('Format cadangan JSON tidak valid.');
+                notify('Isi clipboard bukan cadangan DanaSiap yang valid.', 'error');
               }
             } catch {
               setFormError('Gagal membaca clipboard perangkat.');
+              notify('Gagal membaca clipboard perangkat.', 'error');
             }
           }}
         />
         {backupPreview && (
-          <View style={[s.notice, {backgroundColor: '#EAF7D7', borderColor: c.lime, borderWidth: 1}]}>
+          <Appear style={[s.notice, {backgroundColor: '#EAF7D7', borderColor: c.lime, borderWidth: 1}]}>
             <Icon name="check-circle" color={c.ink} size={20} />
             <View style={{flex: 1}}>
               <Text style={s.noticeTitle}>Cadangan valid terverifikasi</Text>
               <Text style={s.muted}>Profil: {backupPreview.name} · {backupPreview.txCount} transaksi · {backupPreview.needsCount} rencana kebutuhan</Text>
             </View>
-          </View>
+          </Appear>
         )}
         <Field
           label="ISI CADANGAN JSON"
@@ -1056,7 +1613,7 @@ function DanaSiap() {
                 const parsed = JSON.parse(backupText);
                 if (parsed.version !== undefined && parsed.version !== 1) throw new Error('Versi cadangan belum didukung.');
                 const next = backupPreview?.validState ?? validateState(parsed.state ?? parsed.data ?? parsed);
-                Alert.alert(
+                showDialog(
                   'Pulihkan cadangan?',
                   `Profil: ${next.profile.name || 'Pengguna'}. ${next.transactions.length} transaksi, ${next.needs.length} kebutuhan. Data perangkat ini akan diganti.`,
                   [
@@ -1067,13 +1624,14 @@ function DanaSiap() {
                         setDemo(false);
                         persist(next, false);
                         setSheet(null);
-                        Alert.alert('Berhasil', 'Data cadangan telah dipulihkan!');
+                        notify(`Cadangan dipulihkan · ${next.transactions.length} transaksi, ${next.needs.length} kebutuhan.`);
                       },
                     },
                   ]
                 );
               } catch {
                 setFormError('Cadangan tidak valid. Gunakan berkas JSON dari DanaSiap.');
+                notify('Cadangan tidak valid. Gunakan berkas JSON dari DanaSiap.', 'error');
               }
             }}
           />
@@ -1097,7 +1655,7 @@ function DanaSiap() {
             <Button title="Unggah data perangkat" disabled={busy || demo} icon="upload-cloud" onPress={() => runCloud(upload)} />
             <Button title="Ambil data dari cloud" disabled={busy} icon="download-cloud" secondary onPress={() => runCloud(download)} />
             <View style={{height: 1, backgroundColor: '#E3E9DA', marginVertical: 8}} />
-            <Button title="Keluar dari akun" disabled={busy} secondary icon="log-out" onPress={() => runCloud(async () => { await cloud!.signOut(); setCloudUser(''); })} />
+            <Button title="Keluar dari akun" disabled={busy} secondary icon="log-out" onPress={() => runCloud(async () => { await cloud!.signOut(); setCloudUser(''); notify('Kamu sudah keluar dari akun. Data di perangkat tetap aman.'); })} />
           </View>
         ) : (
           <View style={{gap: 0, marginTop: 8}}>
@@ -1111,15 +1669,15 @@ function DanaSiap() {
             <Field label="EMAIL" value={cloudEmail} onChange={setCloudEmail} placeholder="nama@email.com" />
             <Field label="PASSWORD" value={cloudPassword} onChange={setCloudPassword} secret />
             <View style={{gap: 10, marginTop: 8}}>
-              <Button title="Masuk" disabled={busy} icon="log-in" onPress={() => runCloud(async () => { const session = await cloud!.signIn(cloudEmail.trim(), cloudPassword); setCloudUser(session.user.email ?? cloudEmail); setCloudPassword(''); })} />
-              <Button title="Buat akun baru" disabled={busy} secondary icon="user-plus" onPress={() => runCloud(async () => { const result = await cloud!.signUp(cloudEmail.trim(), cloudPassword); setCloudMessage(result.confirmationRequired ? 'Cek email untuk konfirmasi, lalu masuk kembali.' : 'Akun siap digunakan.'); if (result.session) setCloudUser(result.session.user.email ?? cloudEmail); setCloudPassword(''); })} />
+              <Button title="Masuk" disabled={busy} icon="log-in" onPress={() => runCloud(async () => { const session = await cloud!.signIn(cloudEmail.trim(), cloudPassword); setCloudUser(session.user.email ?? cloudEmail); setCloudPassword(''); notify(`Berhasil masuk sebagai ${session.user.email ?? cloudEmail.trim()}.`); })} />
+              <Button title="Buat akun baru" disabled={busy} secondary icon="user-plus" onPress={() => runCloud(async () => { const result = await cloud!.signUp(cloudEmail.trim(), cloudPassword); setCloudMessage(result.confirmationRequired ? 'Cek email untuk konfirmasi, lalu masuk kembali.' : 'Akun siap digunakan.'); if (result.session) setCloudUser(result.session.user.email ?? cloudEmail); setCloudPassword(''); notify(result.confirmationRequired ? 'Akun dibuat. Cek email untuk konfirmasi.' : 'Akun dibuat dan siap dipakai.'); })} />
             </View>
           </View>
         )}
         {busy && <ActivityIndicator color={c.ink} style={{marginTop: 15}} />}
         {cloudMessage && <Text style={[s.muted, {marginTop: 15, textAlign: 'center'}]}>{cloudMessage}</Text>}
       </>}
-    </ScrollView></View></View></Modal>
-    <Modal visible={editingNeed !== null} transparent animationType="slide" statusBarTranslucent onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }}><View style={[s.modalBackdrop, keyboardHeight > 0 && {justifyContent: 'flex-end', paddingBottom: keyboardHeight}]}><Pressable style={StyleSheet.absoluteFill} onPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} /><View style={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]}><View style={s.between}><Text style={s.title}>{editingNeed?.title}</Text><AnimatedPressable accessibilityLabel="Tutup detail kebutuhan" onPress={() => setEditingNeed(null)} style={s.circle} scaleTo={0.88}><Icon name="x" /></AnimatedPressable></View>{editingNeed && <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><Text style={[s.number, {marginTop: 12}]}>{currency(remainingAmount(editingNeed))}</Text><Text style={s.muted}>Jadwal {shortDate(editingNeed.dueDate)} · alokasi {currency(editingNeed.saved)}</Text><Field label="ALOKASI DARI SALDO (RP)" value={allocatedInput} onChange={setAllocatedInput} numeric /><Field label="JADWAL BARU (YYYY-MM-DD)" value={rescheduleDate} onChange={setRescheduleDate} /><View style={[s.row, {gap: 9, marginTop: 11}]}><Chip label="−1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, -1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+3 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 3));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /></View>{formError && <Text style={s.error}>{formError}</Text>}<View style={{gap: 11, marginTop: 22}}><Button title="Simpan & hitung ulang" secondary icon="calendar" onPress={() => {try {const next = reducer(reducer(current.current, {type: 'need/reschedule', id: editingNeed.id, dueDate: rescheduleDate}), {type: 'need/update', id: editingNeed.id, changes: {saved: number(allocatedInput)}}); persist(next); setEditingNeed(null);} catch (error) {setFormError(error instanceof Error ? error.message : 'Periksa alokasi dan tanggal.');}}} /><Button title={editingNeed.kind === 'recurring' ? 'Sudah dipakai / dibayar hari ini' : 'Sudah dibayar hari ini'} icon="check-circle" onPress={() => confirmPay(editingNeed)} /></View><Text style={[s.muted, {marginTop: 12}]}>Jika rutin, jadwal berikutnya dimulai dari pembayaran aktual. Saldo dan prediksi langsung diperbarui.</Text></ScrollView>}</View></View></Modal>
+    </CrossBlur></ScrollView></SheetModal>
+    <SheetModal visible={editingNeed !== null} onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} onBackdropPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'need' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={s.between}><Text style={s.title}>{editingNeed?.title}</Text><AnimatedPressable accessibilityLabel="Tutup detail kebutuhan" onPress={() => setEditingNeed(null)} style={s.circle}><Icon name="x" /></AnimatedPressable></View>{editingNeed && <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><Text style={[s.number, {marginTop: 12}]}>{currency(remainingAmount(editingNeed))}</Text><Text style={s.muted}>Jadwal {shortDate(editingNeed.dueDate)} · alokasi {currency(editingNeed.saved)}</Text><Field label="ALOKASI DARI SALDO (RP)" value={allocatedInput} onChange={setAllocatedInput} numeric /><Field label="JADWAL BARU (YYYY-MM-DD)" value={rescheduleDate} onChange={setRescheduleDate} /><View style={[s.row, {gap: 9, marginTop: 11}]}><Chip label="−1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, -1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+3 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 3));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /></View>{formError && <Text style={s.error}>{formError}</Text>}<View style={{gap: 11, marginTop: 22}}><Button title="Simpan & hitung ulang" secondary icon="calendar" onPress={() => {try {const next = reducer(reducer(current.current, {type: 'need/reschedule', id: editingNeed.id, dueDate: rescheduleDate}), {type: 'need/update', id: editingNeed.id, changes: {saved: number(allocatedInput)}}); persist(next); setEditingNeed(null); notify(`Rencana ${editingNeed.title} diperbarui · ${shortDate(rescheduleDate)}, alokasi ${currency(number(allocatedInput))}.`);} catch (error) {setFormError(error instanceof Error ? error.message : 'Periksa alokasi dan tanggal.');}}} /><Button title={isShoppingNeed(editingNeed) ? 'Mulai belanja' : isElectricityNeed(editingNeed) ? 'Catat beli token' : editingNeed.kind === 'recurring' ? 'Sudah dipakai / dibayar hari ini' : 'Sudah dibayar hari ini'} icon="check-circle" onPress={() => payNeed(editingNeed)} /></View><Text style={[s.muted, {marginTop: 12}]}>Jika rutin, jadwal berikutnya dimulai dari pembayaran aktual. Saldo dan prediksi langsung diperbarui.</Text></ScrollView>}</SheetModal>
   </View>;
 }

@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  applyAutomations,
   defaultState,
   demoState,
   reducer,
@@ -156,6 +157,22 @@ export function useFinance() {
     },
     [persist],
   );
+  // Workdays and daily items are recorded automatically; only exceptions need to be recorded.
+  useEffect(() => {
+    const autoFill = () => {
+      const latest = current.current;
+      if (!latest.initialized || latest.mode === "demo") return;
+      try {
+        const state = applyAutomations(latest.state);
+        if (state !== latest.state) persist({ ...latest, state });
+      } catch {
+        /* Leave records untouched if they cannot be completed automatically. */
+      }
+    };
+    autoFill();
+    document.addEventListener("visibilitychange", autoFill);
+    return () => document.removeEventListener("visibilitychange", autoFill);
+  }, [saved, persist]);
   return {
     ...saved,
     dispatch,

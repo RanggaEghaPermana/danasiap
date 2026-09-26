@@ -415,7 +415,6 @@ a {
     0 3px 8px rgba(27, 36, 19, 0.05);
   z-index: 100;
   padding: 8px;
-  animation: selectFadeIn 0.15s ease-out;
 }
 .user-dropdown-header {
   display: flex;
@@ -1194,7 +1193,7 @@ a {
     #fff9 15px,
     #fff9 17px
   );
-  transition: height 0.3s;
+  transition: height var(--m-dur) var(--m-spring);
 }
 .bar.expense-bar {
   background-color: #293322;
@@ -2765,7 +2764,7 @@ a {
     box-shadow: 0 8px 24px #1b261738;
     z-index: 40;
   }
-  .mobile-nav > button {
+  .mobile-nav .nav-layer > button {
     width: 42px;
     height: 42px;
     border-radius: 50%;
@@ -2776,12 +2775,12 @@ a {
     padding: 0;
     margin: 0 1px;
   }
-  .mobile-nav > button.active {
+  .mobile-nav .nav-layer > button.active {
     color: #f5ffe5;
     background: #3e4737;
     border-color: #606d51;
   }
-  .mobile-nav > button.nav-add {
+  .mobile-nav .nav-layer > button.nav-add {
     width: 50px;
     height: 50px;
     background: var(--lime);
@@ -2804,7 +2803,7 @@ a {
   .demo-banner svg {
     width: 13px;
   }
-  .main-content[data-page="home"] > .section-title {
+  .page-layer[data-page="home"] > .section-title {
     display: none;
   }
   .overview-strip {
@@ -3089,6 +3088,7 @@ a {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  /* Motion classes below switch to an opacity-only fade (pattern 10). */
   *,
   *::before,
   *::after {
@@ -3377,21 +3377,21 @@ a {
     padding: 6px 7px;
     gap: 2px;
   }
-  .mobile-nav > button {
+  .mobile-nav .nav-layer > button {
     width: 36px;
     height: 36px;
     border-color: #3e4737;
   }
-  .mobile-nav > button.nav-add {
+  .mobile-nav .nav-layer > button.nav-add {
     width: 44px;
     height: 44px;
     border-width: 3px;
   }
-  .mobile-nav > button svg {
+  .mobile-nav .nav-layer > button svg {
     width: 19px;
     height: 19px;
   }
-  .mobile-nav > button.nav-add svg {
+  .mobile-nav .nav-layer > button.nav-add svg {
     width: 23px;
     height: 23px;
   }
@@ -3407,7 +3407,7 @@ a {
   .sidebar.is-open {
     visibility: visible;
   }
-  .main-content[data-page="home"] > .section-title {
+  .page-layer[data-page="home"] > .section-title {
     display: flex;
     position: absolute;
     width: 1px;
@@ -3533,7 +3533,6 @@ a {
     0 3px 8px rgba(31, 36, 28, 0.06);
   z-index: 1000;
   padding: 6px;
-  animation: selectFadeIn 0.15s ease-out;
 }
 
 @keyframes selectFadeIn {
@@ -3692,4 +3691,1003 @@ a {
   border-radius: 9px;
   background: #fafcf6;
   border-color: #e3e7d9;
+}
+
+/* ------------------------------------------------------------------
+   Jatah harian, pengeluaran harian, uang sisa, belanja & token listrik
+   ------------------------------------------------------------------ */
+.rotate-180 {
+  transform: rotate(180deg);
+}
+.positive {
+  color: #5f8a1f;
+}
+.over {
+  color: #b4763c;
+}
+.budget-panel {
+  min-height: 0;
+}
+.budget-panel .panel-heading {
+  align-items: flex-start;
+}
+.budget-panel .status-pill {
+  white-space: normal;
+  text-align: right;
+  line-height: 1.4;
+  max-width: 200px;
+}
+.budget-sub {
+  font-size: 11px;
+  color: #8a937c;
+  margin-top: 4px;
+}
+.budget-sub .over {
+  font-weight: 500;
+}
+.budget-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+.budget-actions .button {
+  flex: 1;
+  min-width: 140px;
+}
+.budget-actions .button svg {
+  transition: transform 0.15s;
+}
+.budget-breakdown {
+  margin-top: 18px;
+  padding: 16px 16px 4px;
+  border-radius: 13px;
+  background: #f5f9ed;
+}
+.daily-row.total {
+  border-top: 1px solid #e1e8d4;
+  padding-top: 11px;
+}
+.daily-row.total > span:first-child {
+  color: var(--ink);
+  font-weight: 500;
+}
+.daily-row.total > .money {
+  font-weight: 600;
+}
+.daily-items-list {
+  display: flex;
+  flex-direction: column;
+}
+.daily-item-row {
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+}
+.daily-item-row:last-of-type {
+  border-bottom: 0;
+}
+.daily-item-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.daily-item-main > .money {
+  font-family: var(--condensed);
+  font-size: 22px;
+}
+.daily-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.daily-item-info > strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.daily-item-info > span {
+  font-size: 11px;
+  color: #8a937c;
+}
+.daily-item-info > span.partial {
+  color: #8b782e;
+}
+.daily-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.chip-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 7px 11px;
+  border-radius: 20px;
+  border: 1px solid #dfe8cd;
+  background: #f7faf1;
+}
+.chip-button:hover,
+.chip-button.selected {
+  background: #e5f7b9;
+  border-color: #b7d972;
+}
+.leftover-inline {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 12px;
+}
+.leftover-inline .field {
+  flex: 1;
+}
+.leftover-inline .button {
+  min-height: 40px;
+}
+.field.compact {
+  margin-bottom: 0;
+  gap: 5px;
+  font-size: 10px;
+  color: #7f8a70;
+  min-width: 0;
+}
+.field.compact input {
+  height: 40px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.daily-items-empty {
+  margin: 0;
+}
+.pot-panel .daily-amount {
+  margin-top: 0;
+}
+.pot-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #edf4df;
+  color: #738951;
+  flex-shrink: 0;
+}
+.dialog-subheading {
+  font-size: 19px;
+  margin: 20px 0 12px;
+}
+.pot-list {
+  margin-bottom: 12px;
+}
+.pot-list .daily-row > span:first-child {
+  min-width: 0;
+}
+.pot-history-row {
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px dashed #e1e8d4;
+}
+.pot-history-row .daily-row {
+  margin-bottom: 4px;
+}
+.pot-history-row small {
+  font-size: 10px;
+  color: #929e82;
+}
+.pot-detail > .button {
+  margin-top: 10px;
+}
+.check-result {
+  border-radius: 13px;
+  padding: 15px 17px;
+  margin: 14px 0 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  background: #edf4df;
+  color: #4d6624;
+  border: 1px solid #d5e6b4;
+}
+.check-result.sisa {
+  background: #f1f7e3;
+  color: #56702a;
+}
+.check-result.turun {
+  background: #fff4d7;
+  color: #7a6824;
+  border-color: #f0dfa6;
+}
+.check-result.bahaya {
+  background: #fff0e7;
+  color: #ad5137;
+  border-color: #f6cdb8;
+}
+.budget-hint {
+  font-size: 11px;
+  line-height: 1.7;
+  padding: 9px 12px;
+  border-radius: 8px;
+  margin: 0 0 16px;
+}
+.budget-hint.turun {
+  background: #fff4d7;
+  color: #7a6824;
+}
+.budget-hint.bahaya {
+  background: #fff0e7;
+  color: #ad5137;
+}
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  flex-wrap: wrap;
+}
+.check-row input {
+  width: 17px;
+  height: 17px;
+  accent-color: #7fa43a;
+  margin: 0;
+  flex-shrink: 0;
+}
+.pot-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 11px;
+  background: #f4f8ec;
+  border: 1px solid #e3eacf;
+  margin: 0 0 16px;
+}
+label.pot-toggle {
+  flex-direction: row;
+}
+.pot-toggle small {
+  font-size: 11px;
+  color: #7b886d;
+}
+.form-success {
+  color: #4d6624;
+  font-size: 12px;
+  line-height: 1.7;
+  background: #edf4df;
+  padding: 10px 13px;
+  border-radius: 8px;
+  margin: 0 0 14px;
+}
+.day-section {
+  border-top: 1px dashed #dde4d2;
+  margin-top: 22px;
+}
+.day-skip-toggle {
+  margin: 12px 0;
+}
+.skip-range {
+  padding: 16px;
+  border-radius: 13px;
+  background: #f5f9ed;
+}
+.day-need {
+  width: 100%;
+  text-align: left;
+  padding: 6px 0;
+}
+.day-need:hover {
+  color: #719135;
+}
+.day-need strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.plans-tabs {
+  max-width: 560px;
+}
+.shopping-panel {
+  margin-bottom: 25px;
+}
+.shopping-list {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 16px;
+}
+.shopping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 0.7fr) minmax(0, 1.2fr);
+  gap: 10px;
+  align-items: end;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.shopping-row.skipped {
+  opacity: 0.55;
+}
+.shopping-row.run {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 0.7fr) minmax(0, 1.2fr) auto;
+  align-items: center;
+}
+.shopping-row.run .shopping-name strong {
+  font-weight: 500;
+}
+.shopping-row.bought .shopping-name strong {
+  text-decoration: line-through;
+  color: #7f8a70;
+}
+.shopping-row-foot {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.shopping-row.run .shopping-row-foot {
+  grid-column: auto;
+}
+.shopping-row-foot > .money {
+  font-weight: 500;
+  font-size: 13px;
+  margin-right: auto;
+}
+.shopping-row-foot .icon-button {
+  width: 34px;
+  height: 34px;
+}
+.shopping-summary {
+  margin-top: 18px;
+}
+.electricity-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 25px;
+}
+.electricity-forms {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.electricity-headline {
+  font-family: var(--condensed);
+  font-size: 30px;
+  margin-bottom: 14px;
+}
+.daily-items-field {
+  gap: 0;
+}
+.daily-item-editor {
+  padding: 14px;
+  border-radius: 13px;
+  border: 1px solid #e3eacf;
+  background: #f9fbf4;
+  margin-bottom: 12px;
+}
+.daily-item-editor .field {
+  margin-bottom: 12px;
+}
+.daily-item-editor-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.daily-items-field > .button {
+  margin: 2px 0 10px;
+  align-self: flex-start;
+}
+.calendar-day {
+  position: relative;
+}
+.leftover-dot {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e2a73b;
+}
+.calendar-legend i.leftover {
+  background: #e2a73b;
+  border-radius: 50%;
+}
+@media (max-width: 980px) {
+  .electricity-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .budget-panel {
+    order: 0;
+  }
+  .budget-panel .status-pill {
+    max-width: 150px;
+  }
+  .daily-items-panel,
+  .pot-panel {
+    order: 0;
+  }
+  .shopping-row,
+  .shopping-row.run {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .shopping-row .shopping-name {
+    grid-column: 1 / -1;
+  }
+  .shopping-row.run .shopping-row-foot {
+    grid-column: 1 / -1;
+  }
+  .plans-tabs button {
+    font-size: 11px;
+    padding: 9px 4px;
+  }
+  .leftover-dot {
+    top: 5px;
+    right: 5px;
+  }
+}
+
+/* Product photos in the monthly shopping list */
+.item-photo-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.item-photo {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  border: 1px dashed #c9d5b4;
+  background: #f6f9ef;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  overflow: hidden;
+  color: #6f7b60;
+  flex: none;
+}
+.item-photo img,
+.item-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.item-photo:has(img) {
+  border-style: solid;
+}
+.item-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  flex: none;
+}
+.item-photo-wrap .form-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+.shopping-row-foot > .item-photo-wrap {
+  flex-basis: 100%;
+}
+
+/* ==================================================================
+   Motion system (see motion.tsx). Spring-based, glassy, nothing cuts.
+   Only opacity, filter and the individual transform properties
+   (translate/scale) animate, so existing `transform`s keep working.
+   ================================================================== */
+:root {
+  --m-spring: linear(0, 0.034 1.4%, 0.14 3%, 0.521 8.4%, 0.722 11.4%, 0.87 14.6%, 0.964 18%, 1.017 21.6%, 1.038 25.2%, 1.04 28.9%, 1.025 34.5%, 1.004 42.3%, 0.997 50.4%, 1);
+  --m-pop: linear(0, 0.14 4.5%, 0.435 9.1%, 0.737 13.6%, 0.977 18.2%, 1.116 22.7%, 1.167 27.3%, 1.154 31.8%, 1.109 36.4%, 1.057 40.9%, 1.013 45.5%, 0.985 50%, 0.973 54.5%, 0.979 63.6%, 0.996 72.7%, 1.004 81.8%, 1.002 95.5%, 1);
+  --m-exit: cubic-bezier(0.4, 0, 1, 1);
+  --m-dur: 450ms;
+}
+@keyframes m-blur-in {
+  from {
+    opacity: 0;
+    filter: blur(8px);
+    scale: 0.94;
+    translate: var(--m-from, 0 6px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    scale: 1;
+    translate: 0 0;
+  }
+}
+@keyframes m-blur-out {
+  to {
+    opacity: 0;
+    filter: blur(6px);
+    scale: 0.94;
+  }
+}
+@keyframes m-close {
+  to {
+    opacity: 0;
+    filter: blur(6px);
+    scale: 0.96;
+  }
+}
+@keyframes m-appear {
+  from {
+    opacity: 0;
+    filter: blur(8px);
+    scale: 0.96;
+    translate: 0 8px;
+  }
+}
+@keyframes m-surface-in {
+  from {
+    opacity: 0;
+    scale: 0.92;
+  }
+}
+@keyframes m-item-in {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    translate: 0 calc(8px * var(--m-dir, -1));
+  }
+}
+@keyframes m-pop-in {
+  from {
+    scale: 0.6;
+  }
+}
+@keyframes m-value-in {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+    translate: 0 4px;
+  }
+}
+@keyframes m-value-out {
+  to {
+    opacity: 0;
+    filter: blur(4px);
+    translate: 0 -4px;
+  }
+}
+@keyframes m-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes m-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Pattern 1: morph container + cross-blur content. */
+:where(.m-swap) {
+  position: relative;
+}
+.m-swap.is-swapping,
+.is-morphing {
+  overflow: hidden;
+}
+.m-layer.m-enter {
+  animation: m-blur-in var(--m-dur) var(--m-spring) 80ms backwards;
+}
+.m-layer.m-exit {
+  position: absolute;
+  inset: 0 0 auto 0;
+  pointer-events: none;
+  animation: m-blur-out 160ms var(--m-exit) forwards;
+}
+.page-swap > .m-layer,
+.page-swap > .m-layer > .page-layer {
+  transform-origin: 50% 0;
+}
+.modal:has(.m-swap.is-swapping) {
+  overflow: hidden;
+}
+
+/* Pattern 2/3: menus open from their trigger, items one by one; close together, faster. */
+.m-menu {
+  animation: m-surface-in 280ms var(--m-spring) backwards;
+}
+.m-menu.is-exiting,
+.m-close.is-exiting {
+  pointer-events: none;
+  animation: m-close 130ms var(--m-exit) forwards;
+}
+.m-stagger > * {
+  animation: m-item-in var(--m-dur) var(--m-spring) calc(var(--i, 0) * 35ms) backwards;
+}
+.m-stagger.is-exiting > * {
+  animation: none;
+}
+.m-stagger > :nth-child(2) { --i: 1; }
+.m-stagger > :nth-child(3) { --i: 2; }
+.m-stagger > :nth-child(4) { --i: 3; }
+.m-stagger > :nth-child(5) { --i: 4; }
+.m-stagger > :nth-child(6) { --i: 5; }
+.m-stagger > :nth-child(7) { --i: 6; }
+.m-stagger > :nth-child(8) { --i: 7; }
+.m-stagger > :nth-child(9) { --i: 8; }
+.m-stagger > :nth-child(10) { --i: 9; }
+.m-stagger > :nth-child(11) { --i: 10; }
+.m-stagger > :nth-child(n + 12) { --i: 11; }
+/* Coloured circle icons pop in with the pop spring. */
+.m-stagger > * .m-pop,
+.m-pop-in {
+  animation: m-pop-in 560ms var(--m-pop) calc(var(--i, 0) * 35ms) backwards;
+}
+.user-dropdown-menu {
+  transform-origin: calc(100% - 28px) -8px;
+}
+.custom-select-menu {
+  transform-origin: 50% -6px;
+}
+
+/* Pattern 9: cards, rows, toasts, dialogs appear; disappear like a closing menu. */
+.m-appear {
+  animation: m-appear var(--m-dur) var(--m-spring) backwards;
+}
+.toast {
+  animation: m-appear var(--m-dur) var(--m-spring) backwards;
+}
+.toast.is-exiting {
+  pointer-events: none;
+  animation: m-close 130ms var(--m-exit) forwards;
+}
+.modal[open]::backdrop {
+  animation: m-fade-in 220ms ease-out backwards;
+}
+.modal.is-exiting {
+  pointer-events: none;
+  animation: m-close 130ms var(--m-exit) forwards;
+}
+.modal.is-exiting::backdrop {
+  animation: m-fade-out 130ms var(--m-exit) forwards;
+}
+
+/* Pattern 6: sliding tab indicator. */
+.m-has-indicator {
+  position: relative;
+  isolation: isolate;
+}
+.m-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  transition:
+    translate var(--m-dur) var(--m-spring),
+    width var(--m-dur) var(--m-spring),
+    height var(--m-dur) var(--m-spring),
+    opacity 0.2s;
+}
+.m-has-indicator > button {
+  transition: color 0.2s, border-color 0.2s;
+}
+.segmented.m-has-indicator > button.selected {
+  background: transparent;
+  box-shadow: none;
+}
+.segmented > .m-indicator {
+  background: var(--lime);
+  border-radius: 8px;
+  box-shadow: 0 2px 5px #78974510;
+}
+.period-toggle.m-has-indicator > button.selected {
+  background: transparent;
+}
+.period-toggle > .m-indicator {
+  background: var(--lime);
+  border-radius: 20px;
+}
+.scenario-buttons.m-has-indicator > button.active {
+  background: transparent;
+}
+.scenario-buttons > .m-indicator {
+  background: var(--lime);
+  border-radius: 8px;
+}
+.filter-tabs.m-has-indicator > button {
+  background: transparent;
+}
+.filter-tabs.m-has-indicator > button.active {
+  border-color: transparent;
+}
+.filter-tabs > .m-indicator {
+  background: var(--ink);
+  border-radius: 24px;
+}
+.sidebar nav.m-has-indicator > button.active {
+  background: transparent;
+}
+.sidebar nav > .m-indicator {
+  background: var(--lime);
+  border-radius: 11px;
+}
+.mobile-nav .nav-layer > .m-indicator {
+  background: #3e4737;
+  border: 1px solid #606d51;
+  border-radius: 50%;
+}
+.mobile-nav .nav-layer > button.active {
+  background: transparent;
+  border-color: transparent;
+}
+
+/* Bottom nav pill morphs into the action pill. */
+.mobile-nav .nav-layer {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  gap: inherit;
+}
+.mobile-nav .nav-layer.m-exit {
+  position: absolute;
+  inset: 0;
+  justify-content: center;
+}
+.mobile-nav .nav-layer > button.nav-action {
+  width: auto;
+  min-width: 42px;
+  height: 46px;
+  border-radius: 23px;
+  padding: 0 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 10px;
+  line-height: 1.1;
+  white-space: nowrap;
+  color: #dfe8d4;
+  border-color: #454c42;
+}
+.mobile-nav .nav-layer > button.nav-close {
+  width: 42px;
+  padding: 0;
+  border-radius: 50%;
+  color: #c5d1b6;
+}
+.mobile-nav .nav-layer > button.nav-primary {
+  background: var(--lime);
+  color: #25301e;
+  border-color: var(--lime);
+}
+
+/* Header "Catat transaksi" morphs into the three choices (desktop). */
+.record-morph {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 10px;
+  background: var(--ink);
+  color: #fbfef5;
+  min-height: 43px;
+}
+.record-morph .m-layer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.record-morph .m-layer.m-exit {
+  inset: 0;
+  justify-content: flex-end;
+}
+.record-morph .record-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 17px;
+  font-size: 12px;
+  font-weight: 500;
+  color: inherit;
+  white-space: nowrap;
+}
+.record-morph .m-layer:has(> .record-action) {
+  padding: 4px;
+}
+.record-morph .record-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border-radius: 9px;
+  font-size: 12px;
+  color: #eef6e1;
+  white-space: nowrap;
+}
+.record-morph .record-action:hover {
+  background: #39432c;
+}
+.record-morph .record-action.primary {
+  background: var(--lime);
+  color: var(--ink);
+}
+.record-morph .record-action.close {
+  padding: 9px;
+  color: #c5d1b6;
+}
+
+/* Pattern 7: values never swap instantly. */
+.m-value {
+  display: inline-block;
+  position: relative;
+  white-space: nowrap;
+}
+.m-value-in {
+  display: inline-block;
+  animation: m-value-in var(--m-dur) var(--m-spring) backwards;
+}
+.m-value-out {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  animation: m-value-out 160ms var(--m-exit) forwards;
+}
+
+/* Pattern 8: the money chip that flies to Uang Sisa. */
+.fly-chip {
+  position: fixed;
+  z-index: 3000;
+  pointer-events: none;
+  padding: 7px 12px;
+  border-radius: 20px;
+  background: var(--lime);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  box-shadow: 0 8px 22px #3b4d1a38;
+}
+
+/* Pattern 10: reduced motion keeps only a 150 ms opacity fade. */
+@media (prefers-reduced-motion: reduce) {
+  .m-layer.m-enter,
+  .m-menu,
+  .m-stagger > *,
+  .m-appear,
+  .toast,
+  .m-value-in,
+  .modal[open]::backdrop {
+    animation: m-fade-in 150ms linear backwards !important;
+  }
+  .m-stagger > * .m-pop,
+  .m-pop-in {
+    animation: none !important;
+  }
+  .m-layer.m-exit,
+  .m-menu.is-exiting,
+  .m-close.is-exiting,
+  .toast.is-exiting,
+  .modal.is-exiting,
+  .modal.is-exiting::backdrop,
+  .m-value-out {
+    animation: m-fade-out 150ms linear forwards !important;
+  }
+}
+span.m-layer {
+  display: block;
+}
+.daily-item-info .m-layer.m-exit {
+  white-space: nowrap;
+}
+
+/* The header record button morphs over the page; its slot keeps the trigger's size so the
+   title next to it never reflows while the pill springs wider. */
+.record-slot {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.record-placeholder {
+  visibility: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 17px;
+  font-size: 12px;
+  font-weight: 500;
+  min-height: 43px;
+  white-space: nowrap;
+}
+.record-slot > .record-morph {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 20;
+  box-shadow: 0 12px 30px #1420001f;
+}
+
+/* Expanding sections: height springs so the content below moves with them. */
+.m-collapse {
+  display: flow-root;
+}
+.m-collapse.is-collapsing {
+  overflow: hidden;
+}
+
+/* Modal scrollbar follows the rounded corners instead of a square strip on the edge. */
+.modal {
+  scrollbar-gutter: stable;
+}
+.modal::-webkit-scrollbar {
+  width: 12px;
+}
+.modal::-webkit-scrollbar-button {
+  display: none;
+}
+.modal::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 22px;
+}
+.modal::-webkit-scrollbar-thumb {
+  background: #d3dcc4;
+  border-radius: 999px;
+  border: 4px solid #fcfef7;
+}
+.modal::-webkit-scrollbar-thumb:hover {
+  background: #bac6a8;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .modal {
+    scrollbar-width: thin;
+    scrollbar-color: #d3dcc4 transparent;
+  }
+}
+
+/* App dialogs (confirm/alert) replace the browser's own boxes. */
+.modal.app-dialog {
+  width: 400px;
+  padding: 26px;
+}
+.app-dialog-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--lime);
+  color: var(--ink);
+  margin-bottom: 16px;
+}
+.app-dialog-icon.danger {
+  background: #fbe6df;
+  color: #ad543b;
+}
+.app-dialog h2 {
+  font-size: 28px;
+  line-height: 1.05;
+}
+.app-dialog p {
+  margin: 10px 0 22px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #5b6551;
+}
+.app-dialog-actions {
+  display: flex;
+  gap: 10px;
+}
+.app-dialog-actions .button {
+  flex: 1;
+  justify-content: center;
+}
+.button.danger-solid {
+  background: #ad543b;
+  color: #fff;
+}
+.button.danger-solid:hover {
+  background: #97462f;
 }

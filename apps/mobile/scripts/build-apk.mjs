@@ -20,15 +20,17 @@ if (!existsSync(keyFile) && !existsSync(propertiesFile)) {
 }
 execFileSync('pnpm', ['exec', 'expo', 'prebuild', '--platform', 'android', '--no-install'], {cwd: appRoot, stdio: 'inherit', env: {...process.env, CI: '1'}});
 execFileSync('./gradlew', ['assembleRelease', '--no-daemon', '--max-workers=2', '-PreactNativeArchitectures=armeabi-v7a,arm64-v8a,x86_64'], {cwd: resolve(appRoot, 'android'), stdio: 'inherit', env: {...process.env, NODE_ENV: 'production'}});
+const {version} = JSON.parse(readFileSync(resolve(appRoot, 'app.json'), 'utf8')).expo;
+const apkName = `danasiap-${version}.apk`;
 const artifactDir = resolve(appRoot, 'artifacts');
 mkdirSync(artifactDir, {recursive: true});
-const destination = resolve(artifactDir, 'danasiap-1.0.0.apk');
+const destination = resolve(artifactDir, apkName);
 copyFileSync(resolve(appRoot, 'android/app/build/outputs/apk/release/app-release.apk'), destination);
 const checksum = createHash('sha256').update(readFileSync(destination)).digest('hex');
-writeFileSync(`${destination}.sha256`, `${checksum}  danasiap-1.0.0.apk\n`);
+writeFileSync(`${destination}.sha256`, `${checksum}  ${apkName}\n`);
 const rootArtifactDir = resolve(appRoot, '../../artifacts');
 if (existsSync(rootArtifactDir)) {
-  copyFileSync(destination, resolve(rootArtifactDir, 'danasiap-1.0.0.apk'));
-  writeFileSync(resolve(rootArtifactDir, 'danasiap-1.0.0.apk.sha256'), `${checksum}  danasiap-1.0.0.apk\n`);
+  copyFileSync(destination, resolve(rootArtifactDir, apkName));
+  writeFileSync(resolve(rootArtifactDir, `${apkName}.sha256`), `${checksum}  ${apkName}\n`);
 }
 console.log(`Signed APK: ${destination}\nSHA256: ${checksum}\nKeep the private credentials directory safely backed up to sign future updates.`);

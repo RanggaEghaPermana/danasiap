@@ -22,6 +22,10 @@ import {
   forecast,
   currency,
   remainingAmount,
+  periodBudget,
+  checkPurchase,
+  isShoppingNeed,
+  isElectricityNeed,
   isWorkday,
   isDateKey,
   reducer,
@@ -34,6 +38,8 @@ import {
   type Attendance,
 } from "@danasiap/core";
 import { Brand, Money, DateLabel, MoneyInput, CustomSelect, processAvatarFile } from "./components";
+import { alertDialog } from "./dialog";
+import { Collapse, MorphSwap, TabIndicator } from "./motion";
 
 export const weekLabels = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
 const id = () => crypto.randomUUID();
@@ -48,13 +54,148 @@ export function validatedProfile(profile: Profile): Profile {
   return validateState({ ...defaultState(), profile: { ...profile, name } })
     .profile;
 }
+export type DailyItemDraft = {
+  id: string;
+  title: string;
+  amount: number;
+  days: number[];
+  skipHolidays: boolean;
+};
+export function draftDailyItems(state: AppState): DailyItemDraft[] {
+  return (state.dailyItems ?? []).map(
+    ({ id, title, amount, days, skipHolidays }) => ({
+      id,
+      title,
+      amount,
+      days: [...days],
+      skipHolidays,
+    }),
+  );
+}
+/** Friendly checks before the reducer rejects an incomplete daily item. */
+export function validatedDailyItems(items: DailyItemDraft[]): DailyItemDraft[] {
+  return items.map((item, index) => {
+    const title = item.title.trim();
+    const label = title || `Pengeluaran harian ke-${index + 1}`;
+    if (!title) throw new Error(`Isi nama ${label.toLowerCase()}.`);
+    if (title.length > 100) throw new Error(`Nama ${title} terlalu panjang.`);
+    if (!item.amount) throw new Error(`Isi nominal per hari untuk ${title}.`);
+    if (!item.days.length) throw new Error(`Pilih minimal satu hari untuk ${title}.`);
+    return { ...item, title };
+  });
+}
+function DailyItemsEditor({
+  items,
+  setItems,
+}: {
+  items: DailyItemDraft[];
+  setItems: (items: DailyItemDraft[]) => void;
+}) {
+  const update = (itemId: string, changes: Partial<DailyItemDraft>) =>
+    setItems(
+      items.map((item) => (item.id === itemId ? { ...item, ...changes } : item)),
+    );
+  return (
+    <fieldset className="field daily-items-field">
+      <legend>Pengeluaran harian</legend>
+      {items.map((item) => (
+        <div className="daily-item-editor" key={item.id}>
+          <div className="form-two">
+            <label className="field">
+              Nama
+              <input
+                maxLength={100}
+                value={item.title}
+                onChange={(e) => update(item.id, { title: e.target.value })}
+                placeholder="Misalnya, ongkos anak"
+              />
+            </label>
+            <label className="field">
+              Nominal per hari (Rp)
+              <MoneyInput
+                value={item.amount}
+                onChange={(amount) => update(item.id, { amount })}
+                placeholder="50.000"
+              />
+            </label>
+          </div>
+          <div className="week-picker" role="group" aria-label={`Hari ${item.title || "pengeluaran"}`}>
+            {[1, 2, 3, 4, 5, 6, 0].map((day) => (
+              <button
+                type="button"
+                key={day}
+                aria-pressed={item.days.includes(day)}
+                className={item.days.includes(day) ? "selected" : ""}
+                onClick={() =>
+                  update(item.id, {
+                    days: item.days.includes(day)
+                      ? item.days.filter((d) => d !== day)
+                      : [...item.days, day],
+                  })
+                }
+              >
+                {weekLabels[day]}
+              </button>
+            ))}
+          </div>
+          <div className="daily-item-editor-foot">
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={item.skipHolidays}
+                onChange={(e) =>
+                  update(item.id, { skipHolidays: e.target.checked })
+                }
+              />
+              Libur di tanggal merah
+            </label>
+            <button
+              type="button"
+              className="text-button danger"
+              onClick={() => setItems(items.filter((i) => i.id !== item.id))}
+            >
+              <Trash2 size={14} /> Hapus
+            </button>
+          </div>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="button light"
+        onClick={() =>
+          setItems([
+            ...items,
+            {
+              id: id(),
+              title: "",
+              amount: 0,
+              days: [1, 2, 3, 4, 5],
+              skipHolidays: true,
+            },
+          ])
+        }
+      >
+        <Plus size={16} /> Tambah pengeluaran harian
+      </button>
+      <small>
+        Uang yang keluar rutin tiap hari, misalnya ongkos anak atau uang masak.
+        Tercatat otomatis tiap hari terjadwal. Tandai kalau nggak dipakai.
+      </small>
+    </fieldset>
+  );
+}
 export function ProfileFields({
   profile,
   setProfile,
+  items,
+  setItems,
 }: {
   profile: Profile;
   setProfile: (p: Profile) => void;
+  items?: DailyItemDraft[];
+  setItems?: (items: DailyItemDraft[]) => void;
 }) {
+  const working = profile.working !== false;
   return (
     <>
       <div className="avatar-field">
@@ -86,7 +227,8 @@ export function ProfileFields({
                     const avatarUrl = await processAvatarFile(file);
                     setProfile({ ...profile, avatarUrl });
                   } catch (err) {
-                    alert(
+                    void alertDialog(
+                      "Foto belum bisa dipakai",
                       err instanceof Error
                         ? err.message
                         : "Gagal memproses foto profil.",
@@ -120,6 +262,34 @@ export function ProfileFields({
           autoComplete="given-name"
         />
       </label>
+      <fieldset className="field">
+        <legend>Apakah kamu bekerja?</legend>
+        <div className="segmented m-has-indicator">
+          <TabIndicator active={working} />
+          {[
+            [true, "Bekerja"],
+            [false, "Tidak bekerja"],
+          ].map(([value, label]) => (
+            <button
+              type="button"
+              key={String(value)}
+              aria-pressed={working === value}
+              className={working === value ? "selected" : ""}
+              onClick={() =>
+                setProfile({ ...profile, working: value as boolean })
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {!working && (
+          <small>
+            Absensi, gajian, dan hari kerja disembunyikan. Pemasukan dicatat
+            lewat Pemasukan.
+          </small>
+        )}
+      </fieldset>
       <div className="form-two">
         <label className="field">
           Saldo sebelum transaksi dicatat (Rp)
@@ -132,7 +302,7 @@ export function ProfileFields({
           />
           <small>Pengeluaran bertanggal kemarin atau hari ini tetap dikurangi dari angka ini.</small>
         </label>
-        <label className="field">
+        {working && <label className="field">
           {profile.payrollCycle === "monthly" ? "Upah pokok / hari kerja (Rp)" : "Pemasukan / hari kerja (Rp)"}
           <MoneyInput
             value={profile.dailyIncome}
@@ -141,9 +311,9 @@ export function ProfileFields({
             }
             placeholder="70000"
           />
-        </label>
+        </label>}
       </div>
-      <div className="form-two">
+      {working && <><div className="form-two">
         <label className="field">
           Sistem Penggajian
           <CustomSelect
@@ -197,21 +367,8 @@ export function ProfileFields({
         <small>
           Diterima cash langsung di tangan saat hari aktif (kuliah/kerja). Hari libur otomatis Rp 0.
         </small>
-      </label>
-      <label className="field">
-        Rencana pengeluaran harian (Rp) — Opsional
-        <MoneyInput
-          value={profile.dailyBudget}
-          onChange={(dailyBudget) =>
-            setProfile({ ...profile, dailyBudget })
-          }
-          placeholder="0"
-        />
-        <small>
-          Boleh isi 0 jika pengeluaran harian tidak tentu / dadakan (seperti jajan/makan lapar dadakan cukup dicatat lewat 'Catat transaksi'). Kebutuhan berkala (ganti oli 3 bulan, kuota bulanan, dll.) dicatat di menu Kebutuhan.
-        </small>
-      </label>
-      <fieldset className="field">
+      </label></>}
+      {working && <fieldset className="field">
         <legend>Hari kerja rutin</legend>
         <div className="week-picker">
           {[1, 2, 3, 4, 5, 6, 0].map((day) => (
@@ -234,9 +391,50 @@ export function ProfileFields({
           ))}
         </div>
         <small>Hari yang tidak dipilih diprediksi tanpa pemasukan.</small>
-      </fieldset>
+      </fieldset>}
+      <label className="field">
+        Sebulan mulai tanggal
+        <CustomSelect
+          value={profile.periodStartDay ?? 1}
+          onChange={(val) =>
+            setProfile({ ...profile, periodStartDay: Number(val) })
+          }
+          options={Array.from({ length: 28 }, (_, i) => i + 1).map((d) => ({
+            value: d,
+            label: `Tanggal ${d}`,
+            sublabel:
+              d === 1
+                ? "Awal bulan kalender"
+                : `Sampai tanggal ${d - 1} bulan berikutnya`,
+          }))}
+        />
+        <small>
+          Jatah jajan dihitung per periode ini. Pilih tanggal uang bulananmu
+          biasanya masuk.
+        </small>
+      </label>
+      {items && setItems && (
+        <DailyItemsEditor items={items} setItems={setItems} />
+      )}
     </>
   );
+}
+
+/** A fresh record with the daily items recorded automatically from today. */
+export function initialState(
+  profile: Profile,
+  items: DailyItemDraft[],
+): AppState {
+  const today = localDate();
+  return validateState({
+    ...defaultState(today),
+    profile: validatedProfile(profile),
+    dailyItems: validatedDailyItems(items).map((item) => ({
+      ...item,
+      days: [...item.days].sort(),
+      since: today,
+    })),
+  });
 }
 
 export function Welcome({
@@ -246,6 +444,7 @@ export function Welcome({
 }) {
   const [setup, setSetup] = useState(false);
   const [profile, setProfile] = useState(defaultState().profile);
+  const [items, setItems] = useState<DailyItemDraft[]>([]);
   const [error, setError] = useState("");
   return (
     <main className="welcome-shell">
@@ -326,16 +525,18 @@ export function Welcome({
               onSubmit={(e) => {
                 e.preventDefault();
                 try {
-                  start({
-                    ...defaultState(),
-                    profile: validatedProfile(profile),
-                  });
+                  start(initialState(profile, items));
                 } catch (err) {
                   setError(errorText(err));
                 }
               }}
             >
-              <ProfileFields profile={profile} setProfile={setProfile} />
+              <ProfileFields
+                profile={profile}
+                setProfile={setProfile}
+                items={items}
+                setItems={setItems}
+              />
               {error && (
                 <p role="alert" className="form-error">
                   {error}
@@ -354,30 +555,62 @@ export function Welcome({
 
 export function TransactionForm({
   initialKind = "expense",
+  initialFromLeftover = false,
+  state,
   monthlyPayroll = false,
+  working = true,
   dispatch,
   done,
 }: {
   initialKind?: "income" | "expense";
+  initialFromLeftover?: boolean;
+  state: AppState;
   monthlyPayroll?: boolean;
+  working?: boolean;
   dispatch: (a: FinancialAction) => void;
   done: () => void;
 }) {
   const [kind, setKind] = useState(initialKind);
+  const [amount, setAmount] = useState(0);
+  // null follows the suggestion; true/false is the user's own choice.
+  const [usePot, setUsePot] = useState<boolean | null>(
+    initialFromLeftover ? true : null,
+  );
+  const [nextPeriod, setNextPeriod] = useState(false);
   const [error, setError] = useState("");
+  const budget = periodBudget(state);
+  const pot = Math.max(0, budget.leftoverPot);
+  const check = amount > 0 ? checkPurchase(budget, amount) : null;
+  const suggested = check?.fromLeftover ?? 0;
+  const potOn = kind === "expense" && pot > 0 && (usePot ?? suggested > 0);
+  const fromLeftover = !potOn
+    ? 0
+    : usePot === null
+      ? suggested
+      : Math.min(pot, amount);
+  const ownMoney = amount - fromLeftover;
+  const freeAfter = budget.freeMoney - ownMoney;
+  const perDayAfter =
+    budget.daysLeft > 1 ? Math.max(0, Math.floor(freeAfter / (budget.daysLeft - 1))) : 0;
+  const newPeriodStart = addDays(budget.end, 1);
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
     try {
+      if (!amount) throw new Error("Isi nominalnya dulu.");
       dispatch({
         type: "transaction/add",
         transaction: {
           id: id(),
           title: String(data.get("title")).trim(),
-          amount: parseThousands(String(data.get("amount"))),
+          amount,
           type: kind,
           category: String(data.get("category")),
           date: String(data.get("date")),
+          ...(kind === "expense" && fromLeftover > 0 ? { fromLeftover } : {}),
+          ...(kind === "income" && nextPeriod && budget.daysLeft <= 3
+            ? { effectiveDate: newPeriodStart }
+            : {}),
         },
       });
       done();
@@ -387,7 +620,8 @@ export function TransactionForm({
   };
   return (
     <form onSubmit={submit}>
-      <div className="segmented">
+      <div className="segmented m-has-indicator">
+        <TabIndicator active={kind} />
         <button
           type="button"
           className={kind === "expense" ? "selected" : ""}
@@ -408,7 +642,8 @@ export function TransactionForm({
         <MoneyInput
           autoFocus
           required
-          name="amount"
+          value={amount}
+          onChange={setAmount}
           placeholder="0"
         />
       </label>
@@ -458,20 +693,154 @@ export function TransactionForm({
           />
         </label>
       </div>
-      {kind === "income" && (
+      <Collapse when={Boolean(kind === "expense" && pot > 0)}>{() => (
+        <div className="pot-toggle">
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={potOn}
+              onChange={(e) => setUsePot(e.target.checked)}
+            />
+            Ambil dari Uang Sisa
+            <span className="muted">
+              (ada <Money amount={pot} />)
+            </span>
+          </label>
+          <Collapse when={Boolean(potOn && fromLeftover > 0)}>{() => (
+            <small>
+              <Money amount={fromLeftover} /> diambil dari Uang Sisa
+              {ownMoney > 0 ? (
+                <>
+                  , <Money amount={ownMoney} /> dari jatah jajan
+                </>
+              ) : null}
+              .
+            </small>
+          )}</Collapse>
+        </div>
+      )}</Collapse>
+      <Collapse when={Boolean(kind === "expense" && amount > 0 && ownMoney > Math.max(0, budget.leftToday))}>{() => (
+        <p className={`budget-hint ${freeAfter < 0 ? "bahaya" : "turun"}`}>
+          {freeAfter < 0 ? (
+            <>
+              Uang wajib jadi kurang <Money amount={-freeAfter} />.
+            </>
+          ) : budget.daysLeft > 1 ? (
+            <>
+              Jatah jajan jadi <Money amount={perDayAfter} />
+              /hari sampai <DateLabel date={budget.end} />.
+            </>
+          ) : (
+            <>Melebihi jatah hari ini, tapi uang wajib masih aman.</>
+          )}
+        </p>
+      )}</Collapse>
+      <Collapse when={Boolean(kind === "income" && budget.daysLeft <= 3)}>{() => (
+        <label className="check-row pot-toggle">
+          <input
+            type="checkbox"
+            checked={nextPeriod}
+            onChange={(e) => setNextPeriod(e.target.checked)}
+          />
+          <span>
+            Untuk periode baru (mulai <DateLabel date={newPeriodStart} />)
+          </span>
+        </label>
+      )}</Collapse>
+      <Collapse when={Boolean(kind === "income" && working)}>{() => (
         <p className="form-hint">
           {monthlyPayroll
             ? "Pendapatan kerja dicatat lewat kehadiran. Kalau mencatat gaji yang sudah cair, sertakan kata ‘gaji’ pada nama agar prediksi tidak menghitungnya dua kali."
             : "Pendapatan kerja dicatat lewat kehadiran agar tidak terhitung dua kali."}
         </p>
-      )}
+      )}</Collapse>
+      <Collapse when={Boolean(error)}>{() => (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}</Collapse>
+      <button className="button dark full" type="submit">
+        Simpan transaksi <Check size={17} />
+      </button>
+    </form>
+  );
+}
+
+export function TokenPurchaseForm({
+  defaultAmount = 0,
+  dispatch,
+  done,
+}: {
+  defaultAmount?: number;
+  dispatch: (a: FinancialAction) => void;
+  done: () => void;
+}) {
+  const [amount, setAmount] = useState(defaultAmount);
+  const [kwh, setKwh] = useState("");
+  const [date, setDate] = useState(localDate());
+  const [error, setError] = useState("");
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      if (!amount) throw new Error("Isi nominal token yang dibeli.");
+      const kwhValue = kwh.trim() ? Number(kwh.replace(",", ".")) : undefined;
+      if (kwhValue !== undefined && (!Number.isFinite(kwhValue) || kwhValue <= 0))
+        throw new Error("kWh dari struk harus angka lebih dari 0.");
+      dispatch({
+        type: "electricity/purchase",
+        purchase: {
+          id: id(),
+          date,
+          amount,
+          ...(kwhValue !== undefined ? { kwh: kwhValue } : {}),
+        },
+      });
+      setAmount(defaultAmount);
+      setKwh("");
+      setError("");
+      done();
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
+  return (
+    <form onSubmit={submit}>
+      <div className="form-two">
+        <label className="field">
+          Nominal token (Rp)
+          <MoneyInput value={amount} onChange={setAmount} placeholder="100.000" />
+        </label>
+        <label className="field">
+          kWh dari struk (opsional)
+          <input
+            inputMode="decimal"
+            value={kwh}
+            onChange={(e) => setKwh(e.target.value)}
+            placeholder="Misalnya, 66,8"
+          />
+        </label>
+      </div>
+      <label className="field">
+        Tanggal beli
+        <input
+          type="date"
+          required
+          max={localDate()}
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+        />
+      </label>
+      <p className="form-hint">
+        Dicatat sebagai pengeluaran listrik dan dipakai untuk memperkirakan
+        pembelian berikutnya.
+      </p>
       {error && (
         <p className="form-error" role="alert">
           {error}
         </p>
       )}
       <button className="button dark full" type="submit">
-        Simpan transaksi <Check size={17} />
+        Catat beli token <Check size={17} />
       </button>
     </form>
   );
@@ -514,7 +883,8 @@ export function NeedForm({
   };
   return (
     <form onSubmit={submit}>
-      <div className="segmented">
+      <div className="segmented m-has-indicator">
+        <TabIndicator active={kind} />
         {[
           ["recurring", "Rutin"],
           ["debt", "Utang"],
@@ -626,11 +996,13 @@ export function NeedDetail({
   state,
   dispatch,
   done,
+  openShopping,
 }: {
   need: Need;
   state: AppState;
   dispatch: (a: FinancialAction) => void;
   done: () => void;
+  openShopping?: () => void;
 }) {
   const [date, setDate] = useState(need.dueDate);
   const [amount, setAmount] = useState(remainingAmount(need));
@@ -670,7 +1042,8 @@ export function NeedDetail({
               : "Target tabungan"}
         </small>
       </div>
-      <div className="segmented">
+      <div className="segmented m-has-indicator">
+        <TabIndicator active={tab} />
         <button
           onClick={() => setTab("schedule")}
           className={tab === "schedule" ? "selected" : ""}
@@ -690,6 +1063,7 @@ export function NeedDetail({
           Bayar
         </button>
       </div>
+      <MorphSwap swapKey={tab}>
       {tab === "schedule" ? (
         <form
           onSubmit={(e) => {
@@ -770,6 +1144,28 @@ export function NeedDetail({
             Simpan alokasi <Check size={17} />
           </button>
         </form>
+      ) : isShoppingNeed(need) ? (
+        <div>
+          <p className="form-hint">
+            Belanja bulanan dicatat dari daftar belanja: centang barang yang
+            dibeli dan sesuaikan harganya. Kalau lebih hemat, selisihnya masuk
+            Uang Sisa.
+          </p>
+          <button
+            className="button dark full"
+            type="button"
+            onClick={openShopping}
+            disabled={!openShopping}
+          >
+            Mulai belanja <ArrowUpRight size={17} />
+          </button>
+        </div>
+      ) : isElectricityNeed(need) ? (
+        <TokenPurchaseForm
+          defaultAmount={remainingAmount(need)}
+          dispatch={dispatch}
+          done={done}
+        />
       ) : (
         <form
           onSubmit={(e) => {
@@ -797,6 +1193,7 @@ export function NeedDetail({
           </button>
         </form>
       )}
+      </MorphSwap>
       {error && (
         <p className="form-error" role="alert">
           {error}
@@ -830,7 +1227,12 @@ export function AttendanceForm({
       : state.profile.dailyIncome;
   const [status, setStatus] = useState<
     "present" | "absent" | "holiday" | "half"
-  >(() => prior?.status || (isWorkday(state, date) ? "present" : "holiday"));
+  >(() =>
+    // An automatic "present" is usually opened to report an absence.
+    prior?.auto
+      ? "absent"
+      : prior?.status || (isWorkday(state, date) ? "present" : "holiday"),
+  );
   const [income, setIncome] = useState(fullDayIncome(prior));
   const [deductionPct, setDeductionPct] = useState<number>(0);
   const defaultAllowance = state.profile.activityAllowance ?? 0;
@@ -1105,14 +1507,14 @@ export function AttendanceForm({
       </div>
       {isDateKey(date) && date > localDate() ? (
         <p className="form-hint">
-          Tanggal mendatang dicatat sebagai rencana. Konfirmasi kembali pada
-          hari kerja agar pemasukan masuk ke saldo.
+          Tanggal mendatang dicatat sebagai rencana dan otomatis dikonfirmasi
+          saat harinya tiba.
         </p>
       ) : (
         prior?.planned && (
           <p className="form-hint">
-            Ini masih rencana. Simpan kehadiran untuk mengonfirmasi hasil kerja
-            yang sebenarnya.
+            Ini masih rencana. Simpan untuk mengubahnya; rencana otomatis
+            dikonfirmasi saat harinya tiba.
           </p>
         )
       )}

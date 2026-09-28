@@ -13,10 +13,25 @@ import {
   ChevronDown,
   Check,
   Search,
+  ShoppingBasket,
+  Zap,
+  Flame,
+  CreditCard,
+  Repeat,
 } from "lucide-react";
-import { currency, formatThousands, parseThousands, type Need, type Transaction } from "@danasiap/core";
+import {
+  currency,
+  formatThousands,
+  parseThousands,
+  isElectricityNeed,
+  isGasNeed,
+  isShoppingNeed,
+  type Need,
+  type Transaction,
+} from "@danasiap/core";
 import {
   AnimatedValue,
+  Marquee,
   Presence,
   SPRING,
   SPRING_MS,
@@ -220,6 +235,21 @@ export function CategoryIcon({
               : Wallet;
   return <Icon size={size} strokeWidth={1.6} />;
 }
+/** Icon by what the need is: monthly shopping, token, gas, debt, savings goal, or a routine bill. */
+export function NeedIcon({ need, size = 20 }: { need: Need; size?: number }) {
+  const Icon = isShoppingNeed(need)
+    ? ShoppingBasket
+    : isElectricityNeed(need)
+      ? Zap
+      : isGasNeed(need)
+        ? Flame
+        : need.kind === "debt"
+          ? CreditCard
+          : need.kind === "goal"
+            ? Target
+            : Repeat;
+  return <Icon size={size} strokeWidth={1.6} />;
+}
 export function NeedCard({
   need,
   onOpen,
@@ -244,9 +274,7 @@ export function NeedCard({
     >
       <div className="need-top">
         <span className="need-symbol">
-          <CategoryIcon
-            category={need.kind === "debt" ? "utang" : need.title}
-          />
+          <NeedIcon need={need} />
         </span>
         <Ellipsis size={19} />
       </div>
@@ -295,7 +323,9 @@ export function TransactionRow({
         <CategoryIcon category={transaction.category} />
       </span>
       <span className="transaction-info">
-        <strong>{transaction.title}</strong>
+        <strong>
+          <Marquee>{transaction.title}</Marquee>
+        </strong>
         <span>
           {transaction.category} <i>·</i> <DateLabel date={transaction.date} />
         </span>
@@ -305,6 +335,72 @@ export function TransactionRow({
         {currency(transaction.amount)}
       </strong>
     </button>
+  );
+}
+/** Case-insensitive "contains" over any of the given texts. */
+export function matchesQuery(query: string, ...texts: (string | undefined)[]) {
+  const q = query.trim().toLowerCase();
+  return !q || texts.some((text) => text?.toLowerCase().includes(q));
+}
+/** Search box with a magnifier and a clear (×) button. The × fades in inside a fixed slot. */
+export function SearchField({
+  value,
+  onChange,
+  placeholder,
+  className = "",
+  label,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  className?: string;
+  label?: string;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <label className={`search-field ${className}`}>
+      <Search size={17} aria-hidden="true" />
+      <input
+        ref={input}
+        type="search"
+        aria-label={label ?? placeholder}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && value) {
+            e.preventDefault();
+            onChange("");
+          }
+        }}
+      />
+      <span className="search-clear-slot">
+        <Presence when={value ? "clear" : null}>
+          {(exiting) => (
+            <button
+              type="button"
+              className={`search-clear m-pop-in m-close ${exiting ? "is-exiting" : ""}`}
+              aria-label="Hapus pencarian"
+              onClick={(e) => {
+                e.preventDefault();
+                onChange("");
+                input.current?.focus();
+              }}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </Presence>
+      </span>
+    </label>
+  );
+}
+/** "Nothing matches" line for a filtered list. */
+export function NoMatch({ query }: { query: string }) {
+  return (
+    <p className="no-match">
+      Tidak ada yang cocok dengan “{query.trim()}”.
+    </p>
   );
 }
 export function Empty({
@@ -534,7 +630,7 @@ export function CustomSelect({
           {currentOption?.icon && (
             <span className="custom-select-icon">{currentOption.icon}</span>
           )}
-          <span>{currentOption ? currentOption.label : placeholder}</span>
+          <Marquee>{currentOption ? currentOption.label : placeholder}</Marquee>
         </span>
         <ChevronDown
           size={16}
@@ -585,7 +681,7 @@ export function CustomSelect({
                         <span className="custom-select-icon">{opt.icon}</span>
                       )}
                       <div className="custom-select-option-text">
-                        <span className="custom-select-option-label">{opt.label}</span>
+                        <span className="custom-select-option-label"><Marquee>{opt.label}</Marquee></span>
                         {opt.sublabel && (
                           <span className="custom-select-option-sublabel">
                             {opt.sublabel}

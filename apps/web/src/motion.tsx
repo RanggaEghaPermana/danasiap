@@ -193,12 +193,21 @@ export function MorphSwap({
 export const COLLAPSE_EXIT_MS = 240;
 const COLLAPSE_EXIT = "cubic-bezier(0.4, 0, 0.2, 1)";
 
-function CollapseBody({ exiting, children }: { exiting: boolean; children: ReactNode }) {
+function CollapseBody({
+  exiting,
+  animateIn = true,
+  children,
+}: {
+  exiting: boolean;
+  animateIn?: boolean;
+  children: ReactNode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const animate = (from: number, to: number, duration: number, easing: string) => {
     const el = ref.current;
     if (!el || reducedMotion()) return;
     el.classList.add("is-collapsing");
+    announceMorph(el);
     const run = el.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration, easing, fill: "forwards" });
     run.onfinish = () => {
       if (exiting) return;
@@ -208,7 +217,7 @@ function CollapseBody({ exiting, children }: { exiting: boolean; children: React
   };
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el) animate(0, el.scrollHeight, SPRING_MS, SPRING);
+    if (el && animateIn) animate(0, el.scrollHeight, SPRING_MS, SPRING);
   }, []);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -227,14 +236,26 @@ function CollapseBody({ exiting, children }: { exiting: boolean; children: React
  */
 export function Collapse({
   when,
+  initial = true,
   children,
 }: {
   when: string | boolean | null | undefined;
+  /** false: content that is already open on first render just shows, without opening. */
+  initial?: boolean;
   children: (exiting: boolean) => ReactNode;
 }) {
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+  }, []);
+  const animateIn = initial || mounted.current;
   return (
     <Presence when={when} exitMs={COLLAPSE_EXIT_MS}>
-      {(exiting) => <CollapseBody exiting={exiting}>{children(exiting)}</CollapseBody>}
+      {(exiting) => (
+        <CollapseBody exiting={exiting} animateIn={animateIn}>
+          {children(exiting)}
+        </CollapseBody>
+      )}
     </Presence>
   );
 }
@@ -242,6 +263,12 @@ export function Collapse({
 // ---------------------------------------------------------------------------
 // Container size morph
 // ---------------------------------------------------------------------------
+
+const MORPH_EVENT = "m-morph-start";
+/** Tells morphing ancestors that this element is springing its own size now. */
+function announceMorph(el: Element) {
+  el.dispatchEvent(new Event(MORPH_EVENT, { bubbles: true }));
+}
 
 /**
  * Springs an element from its previous border-box size to its new one whenever its
@@ -272,6 +299,7 @@ export function useAutoMorph(
         frames[1].height = `${to.h}px`;
       }
       el.classList.add("is-morphing");
+      announceMorph(el);
       running = el.animate(frames, { duration: SPRING_MS, easing: SPRING });
       const done = running;
       running.onfinish = running.oncancel = () => {
@@ -286,8 +314,10 @@ export function useAutoMorph(
     };
     const observer = new ResizeObserver(() => {
       if (running) return; // Our own animation is resizing the element.
-      // A section inside is already springing its own height; follow it instead of competing.
-      if (el.querySelector(".m-collapse.is-collapsing")) {
+      // A section or list inside is already springing its own height; follow it instead of
+      // competing (two nested springs would chain one after the other). Content that is
+      // leaving (inside an exiting layer) does not count.
+      if (el.querySelector(":is(.m-collapse.is-collapsing, .is-morphing):not(.m-exit *)")) {
         last = measure();
         return;
       }
@@ -298,9 +328,21 @@ export function useAutoMorph(
       }
       animate(last, now);
     });
+    // A section or list inside started its own spring: stop ours and follow it, so the two
+    // springs never run one after the other (ResizeObserver reaches outer boxes first).
+    const onInnerMorph = (e: Event) => {
+      if (e.target === el || !running) return;
+      const anim = running;
+      running = null;
+      anim.cancel();
+      el.classList.remove("is-morphing");
+      last = measure();
+    };
+    el.addEventListener(MORPH_EVENT, onInnerMorph);
     observer.observe(el);
     return () => {
       observer.disconnect();
+      el.removeEventListener(MORPH_EVENT, onInnerMorph);
       running?.cancel();
     };
   }, [ref, axis]);
@@ -647,4 +689,193 @@ export function useMorphMenu(
       document.removeEventListener("pointerdown", onPointer);
     };
   }, [open]);
+}
+
+// ---------------------------------------------------------------------------
+// Marquee: single-line labels that do not fit scroll instead of showing "…"
+// ---------------------------------------------------------------------------
+
+/**
+ * One shared clock for every marquee: hold 1.2 s → slide to the end 2.4 s → hold 1.2 s →
+ * slide back 2.4 s. Every instance is pinned to the same document-timeline start, so a long
+ * and a short label start together and arrive together (each moves by its own overflow).
+ */
+export const MARQUEE_MS = 7200;
+
+function syncMarquee(track: HTMLElement) {
+  for (const anim of track.getAnimations()) {
+    if ((anim as CSSAnimation).animationName !== "marquee") continue;
+    // Phase-align to the shared epoch (document timeline zero).
+    anim.startTime = 0;
+  }
+}
+
+/**
+ * Text that stays on one line. When it is wider than its box it scrolls on the shared
+ * marquee clock; when it fits it stays still. Reduced motion: it wraps instead.
+ */
+export function Marquee({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  const outer = useRef<HTMLSpanElement>(null);
+  const track = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const box = outer.current;
+    const text = track.current;
+    if (!box || !text) return;
+    let last = -1;
+    const measure = () => {
+      const overflow = Math.max(0, Math.ceil(text.scrollWidth - box.clientWidth));
+      const moving = overflow > 1 && !reducedMotion();
+      if (overflow === last) return;
+      last = overflow;
+      box.style.setProperty("--overflow", `${overflow}px`);
+      const was = box.classList.contains("is-overflowing");
+      box.classList.toggle("is-overflowing", moving);
+      if (moving && !was) syncMarquee(text);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    observer.observe(text);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <span ref={outer} className={`marquee ${className}`}>
+      <span ref={track} className="marquee-track">
+        {children}
+      </span>
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AnimatedList: rows appear (blur in), leave (blur out) and the rest glide to their new place
+// ---------------------------------------------------------------------------
+
+type ListEntry<T> = { key: string; item: T; exiting: boolean };
+
+/**
+ * A keyed list (column or grid) whose rows never snap: new rows appear (pattern 9), removed
+ * rows blur out where they were, and every other row springs (FLIP) to its new position while
+ * the container springs to its new height. Rows present on first render stay still.
+ */
+export function AnimatedList<T>({
+  items,
+  keyOf,
+  children,
+  className = "",
+  itemClassName = "",
+}: {
+  items: T[];
+  keyOf: (item: T) => string;
+  children: (item: T) => ReactNode;
+  className?: string;
+  itemClassName?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useAutoMorph(ref, "height");
+  const [exiting, setExiting] = useState<Map<string, { item: T; index: number }>>(new Map());
+  const previous = useRef<{ keys: string[]; items: Map<string, T> }>({ keys: [], items: new Map() });
+  const positions = useRef(new Map<string, { x: number; y: number; w: number; h: number }>());
+  const entered = useRef(new Map<string, number>());
+  const first = useRef(true);
+  const keys = items.map(keyOf);
+  const live = new Set(keys);
+  // Rows that just disappeared start leaving (kept at their old slot, positioned absolutely).
+  const removed = previous.current.keys.filter((key) => !live.has(key) && !exiting.has(key));
+  let leaving = exiting;
+  if (removed.length || [...exiting.keys()].some((key) => live.has(key))) {
+    leaving = new Map([...exiting].filter(([key]) => !live.has(key)));
+    for (const key of removed) {
+      const item = previous.current.items.get(key);
+      if (item !== undefined)
+        leaving.set(key, { item, index: previous.current.keys.indexOf(key) });
+    }
+    setExiting(leaving);
+  }
+  const now = performance.now();
+  if (!first.current)
+    for (const key of keys)
+      if (!previous.current.keys.includes(key) && !((entered.current.get(key) ?? 0) > now))
+        entered.current.set(key, now + SPRING_MS + 100);
+  const entries: ListEntry<T>[] = items.map((item, i) => ({ key: keys[i], item, exiting: false }));
+  for (const [key, { item, index }] of leaving)
+    entries.splice(Math.min(index, entries.length), 0, { key, item, exiting: true });
+
+  useLayoutEffect(() => {
+    first.current = false;
+    previous.current = { keys, items: new Map(items.map((item, i) => [keys[i], item])) };
+    const root = ref.current;
+    if (!root) return;
+    const reduced = reducedMotion();
+    const next = new Map<string, { x: number; y: number; w: number; h: number }>();
+    for (const el of Array.from(root.children) as HTMLElement[]) {
+      const key = el.dataset.key;
+      if (!key || el.dataset.exiting) continue;
+      const now = { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+      next.set(key, now);
+      const before = positions.current.get(key);
+      if (!before || reduced || (entered.current.get(key) ?? 0) > performance.now()) continue;
+      // Where the row is on screen right now, including a glide that is still running.
+      let [tx, ty] = [0, 0];
+      const running = el.getAnimations().find((a) => (a as Animation & { id: string }).id === "m-flip");
+      if (running) {
+        const t = getComputedStyle(el).translate.split(" ");
+        tx = parseFloat(t[0]) || 0;
+        ty = parseFloat(t[1] ?? "0") || 0;
+        running.cancel();
+      }
+      const dx = before.x + tx - now.x;
+      const dy = before.y + ty - now.y;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+      const anim = el.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], {
+        duration: SPRING_MS,
+        easing: SPRING,
+      });
+      anim.id = "m-flip";
+    }
+    positions.current = new Map([...positions.current].filter(([key]) => leaving.has(key)));
+    for (const [key, pos] of next) positions.current.set(key, pos);
+    for (const [key, until] of entered.current) if (until < performance.now()) entered.current.delete(key);
+  });
+
+  useEffect(() => {
+    if (!exiting.size) return;
+    const timer = setTimeout(() => {
+      setExiting(new Map());
+      for (const key of exiting.keys()) positions.current.delete(key);
+    }, reducedMotion() ? REDUCED_MS : CLOSE_MS + 20);
+    return () => clearTimeout(timer);
+  }, [exiting]);
+
+  return (
+    <div ref={ref} className={`m-list ${className}`}>
+      {entries.map(({ key, item, exiting: out }) => {
+        const pos = out ? positions.current.get(key) : undefined;
+        return (
+          <div
+            key={key}
+            data-key={key}
+            data-exiting={out || undefined}
+            inert={out || undefined}
+            aria-hidden={out || undefined}
+            className={`m-list-item ${itemClassName} ${out ? "m-close is-exiting" : (entered.current.get(key) ?? 0) > now ? "m-appear" : ""}`}
+            style={
+              out && pos
+                ? { position: "absolute", left: pos.x, top: pos.y, width: pos.w, height: pos.h }
+                : undefined
+            }
+          >
+            {children(item)}
+          </div>
+        );
+      })}
+    </div>
+  );
 }

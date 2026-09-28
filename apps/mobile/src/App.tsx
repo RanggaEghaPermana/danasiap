@@ -6,7 +6,7 @@ import { Feather } from '@expo/vector-icons';
 import { useFonts, BarlowCondensed_500Medium, BarlowCondensed_600SemiBold } from '@expo-google-fonts/barlow-condensed';
 import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans';
 import Svg, { Circle, ClipPath, Defs, G, Path, Pattern, Rect } from 'react-native-svg';
-import { AppState, Attendance, DailyItem, FinancialAction, MAX_ITEM_IMAGE, Need, TOKEN_TARIFF, addDays, applyAutomations, balance, calculatePayroll, checkPurchase, currency, dailyTransactionId, defaultState, demoState, electricityEstimate, forecast, gasEstimate, formatThousands, getHoliday, isElectricityNeed, isGasNeed, isNationalHoliday, isScheduled, isShoppingNeed, isWorkday, localDate, migrateDailyBudget, parseThousands, periodBudget, periodHistory, reducer, remainingAmount, shoppingDueDate, shoppingTotal, spendingImpact, validateState } from '@danasiap/core';
+import { AppState, Attendance, DailyItem, FinancialAction, MAX_ITEM_IMAGE, Need, ShoppingItem, TOKEN_TARIFF, addDays, applyAutomations, balance, calculatePayroll, checkPurchase, currency, dailyTransactionId, defaultState, demoState, electricityEstimate, forecast, gasEstimate, formatThousands, getHoliday, isElectricityNeed, isGasNeed, isNationalHoliday, isScheduled, isShoppingNeed, isWorkday, localDate, migrateDailyBudget, parseThousands, periodBudget, periodHistory, reducer, remainingAmount, shoppingDueDate, shoppingTotal, spendingImpact, validateState } from '@danasiap/core';
 import { loadPlan, savePlan } from './storage';
 import { DialogHost, showDialog } from './dialog';
 import { enableReminders, scheduleReminders } from './notifications';
@@ -15,7 +15,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { SaveFormat, manipulateAsync } from 'expo-image-manipulator';
 import * as Clipboard from 'expo-clipboard';
 import { colors as c, styles as s } from './theme';
-import { Appear, BlurLayer, Collapse, BlurTarget, CrossBlur, FadeBg, FlyLayer, PopIn, PressScale, RollingValue, SegmentPills, SheetModal, StaggerList, T, Veiled, exit, fade, flyChip, isReducedMotion, measure, pointOf, spring, useReducedMotion, useVeil } from './motion';
+import { Appear, BlurLayer, Collapse, BlurTarget, CrossBlur, FadeBg, FlyLayer, Marquee, PopIn, PressScale, RollingValue, SegmentPills, SheetModal, StaggerList, T, Veiled, exit, fade, flyChip, isReducedMotion, measure, pointOf, spring, useReducedMotion, useVeil } from './motion';
 
 
 type IconName = React.ComponentProps<typeof Feather>['name'];
@@ -23,6 +23,10 @@ type Tab = 'home' | 'needs' | 'calendar' | 'insights';
 type Sheet = 'expense' | 'income' | 'need' | 'attendance' | 'settings' | 'setup' | 'cloud' | 'backup' | 'daily' | 'leftover' | 'check' | 'shopping' | 'token' | 'gas' | 'skip' | null;
 type DailyDraft = {id: string; title: string; amount: string; days: number[]; skipHolidays: boolean};
 type ShopDraft = {id: string; name: string; qty: string; price: string; skip: boolean; bought: boolean; image?: string};
+/** One shopping item or daily item open in its own edit form; `isNew` until it is saved once. */
+type ShopForm = ShopDraft & {isNew: boolean};
+type DailyForm = DailyDraft & {isNew: boolean};
+const shopDraftOf = (item: ShoppingItem): ShopDraft => ({id: item.id, name: item.name, qty: String(item.qty).replace('.', ','), price: formatThousands(item.price), skip: Boolean(item.skip), bought: false, image: item.image});
 const weekdays = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const shortDate = (date: string) => new Date(`${date}T12:00:00+07:00`).toLocaleDateString('id-ID', {day: 'numeric', month: 'short', timeZone: 'Asia/Jakarta'});
@@ -108,7 +112,7 @@ function Button({title, onPress, secondary, disabled, icon}: {title: string; onP
       style={[s.button, secondary && s.secondaryButton, disabled && {opacity: .45}]}
     >
       {icon && <Icon name={icon} size={17} color={secondary ? c.ink : c.lime} />}
-      <Text style={[s.buttonText, secondary && {color: c.ink}]}>{title}</Text>
+      <Marquee containerStyle={{flexShrink: 1}} style={[s.buttonText, secondary && {color: c.ink}]}>{title}</Marquee>
     </AnimatedPressable>
   );
 }
@@ -149,16 +153,59 @@ function Chip({label, active, onPress}: {label: string; active: boolean; onPress
       accessibilityLabel={label}
       accessibilityState={{selected: active}}
       onPress={onPress}
-      style={s.tab}
+      style={[s.tab, {maxWidth: '100%'}]}
     >
       <FadeBg on={active} color={c.lime} radius={22} />
-      <Text style={[s.actionLabel, active && {color: c.ink, fontWeight: 'bold'}]}>{label}</Text>
+      <Marquee style={[s.actionLabel, active && {color: c.ink, fontWeight: 'bold'}]}>{label}</Marquee>
     </AnimatedPressable>
   );
 }
 
-function TinyButton({label, onPress}: {label: string; onPress: (event: GestureResponderEvent) => void}) {
-  return <AnimatedPressable accessibilityLabel={label} onPress={onPress} style={s.tinyButton}><Text style={s.actionLabel}>{label}</Text></AnimatedPressable>;
+function TinyButton({label, onPress, danger}: {label: string; onPress: (event: GestureResponderEvent) => void; danger?: boolean}) {
+  return <AnimatedPressable accessibilityLabel={label} onPress={onPress} style={[s.tinyButton, {maxWidth: '100%'}]}><Marquee style={[s.actionLabel, danger && {color: c.red}]}>{label}</Marquee></AnimatedPressable>;
+}
+/** Search box for long lists: magnifier, pale field, clear button that pops in once something is typed. */
+function SearchField({value, onChange, placeholder}: {value: string; onChange: (value: string) => void; placeholder: string}) {
+  return <View style={[s.row, {gap: 9, minHeight: 46, paddingLeft: 14, paddingRight: 6, borderRadius: 23, backgroundColor: c.pale, borderWidth: 1, borderColor: c.line}]}>
+    <Icon name="search" size={17} color={c.muted} />
+    <TextInput accessibilityLabel={placeholder} value={value} onChangeText={onChange} placeholder={placeholder} placeholderTextColor="#A0A995" autoCorrect={false} returnKeyType="search" style={{flex: 1, fontFamily: 'DM', fontSize: 13, color: c.ink, paddingVertical: 10}} />
+    {/* The clear button's slot is always reserved, so the field never changes width while typing. */}
+    <View style={{width: 32, height: 32}}><Appear visible={value.length > 0} rise={0}>
+      <AnimatedPressable accessibilityLabel="Hapus pencarian" hitSlop={8} onPress={() => onChange('')} style={{width: 32, height: 32, borderRadius: 16, backgroundColor: c.white, alignItems: 'center', justifyContent: 'center'}}><Icon name="x" size={15} /></AnimatedPressable>
+    </Appear></View>
+  </View>;
+}
+/**
+ * Collapse for a child of a `gap` column: the gap travels with the content, so opening/closing never
+ * adds or removes spacing in one jump.
+ */
+function GapCollapse({visible, gap = 16, children}: {visible: boolean; gap?: number; children: React.ReactNode}) {
+  return <View style={{marginTop: -gap}}><Collapse visible={visible}><View style={{paddingTop: gap}}>{children}</View></Collapse></View>;
+}
+/** Product photo, or a bag icon when there is none. */
+function ShopThumb({image, size = 40}: {image?: string; size?: number}) {
+  return image ? <Image source={{uri: image}} style={{width: size, height: size, borderRadius: 11}} /> : <View style={{width: size, height: size, borderRadius: 11, backgroundColor: c.pale, alignItems: 'center', justifyContent: 'center'}}><Icon name="shopping-bag" size={15} color={c.muted} /></View>;
+}
+/** Small toggle on a shopping row: "stock still at home, skip this month". */
+function SkipChip({on, onPress}: {on: boolean; onPress: () => void}) {
+  return <AnimatedPressable accessibilityRole="switch" accessibilityLabel="Stok masih ada, skip bulan ini" accessibilityState={{checked: on}} hitSlop={8} onPress={onPress} style={{flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, backgroundColor: c.pale}}>
+    <FadeBg on={on} color={c.lime} radius={14} />
+    <PopIn trigger={on}><Icon name={on ? 'check' : 'skip-forward'} size={11} /></PopIn>
+    <Text style={s.tagText}>Skip</Text>
+  </AnimatedPressable>;
+}
+const matches = (query: string, ...texts: (string | undefined)[]) => {const q = query.trim().toLowerCase(); return !q || texts.some(text => text?.toLowerCase().includes(q));};
+function NoMatch({query}: {query: string}) { return <Text style={[s.muted, {textAlign: 'center', paddingVertical: 14}]}>Tidak ada yang cocok dengan “{query.trim()}”.</Text>; }
+/** Icon by kind of need: shopping, electricity and gas have their own, then debt / goal / recurring. */
+const needIcon = (need: Need): IconName => isShoppingNeed(need) ? 'shopping-bag' : isElectricityNeed(need) ? 'zap' : isGasNeed(need) ? 'thermometer' : need.kind === 'debt' ? 'credit-card' : need.kind === 'goal' ? 'target' : 'repeat';
+const DAY_NAMES = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+/** "Setiap hari", "Sen–Jum", "Sen, Rab, Jum". */
+function daysText(days: number[]) {
+  const sorted = [...days].sort((a, b) => a - b);
+  if (sorted.length === 7) return 'Setiap hari';
+  if (sorted.length === 1) return `Tiap ${DAY_NAMES[sorted[0]]}`;
+  const run = sorted.every((d, i) => i === 0 || d === sorted[i - 1] + 1);
+  return run && sorted.length > 2 ? `${weekdays[sorted[0]]}–${weekdays[sorted[sorted.length - 1]]}` : sorted.map(d => weekdays[d]).join(', ');
 }
 type ToastMessage = {id: number; text: string; tone: 'success' | 'error'};
 /** Toasts appear with pattern 9 (blur 8 px → 0, opacity, scale 0.96 → 1, slight rise) and leave with pattern 3. */
@@ -276,7 +323,7 @@ function MorphNav({tab, bottom, onTab, onAction, homeRef}: {tab: Tab; bottom: nu
           <PopIn trigger={open}><AnimatedPressable accessibilityRole="button" accessibilityLabel="Tutup pilihan transaksi" onPress={() => toggle(false)} style={s.navPlus}><Icon name="x" color={c.ink} size={21} /></AnimatedPressable></PopIn>
           {NAV_ACTIONS.map(action => <AnimatedPressable key={action.key} accessibilityRole="button" accessibilityLabel={action.label} onPress={() => {toggle(false); onAction(action.key);}} style={{flex: 1, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', gap: 3}}>
             <Icon name={action.icon} color={c.lime} size={18} />
-            <Text numberOfLines={1} style={{fontFamily: 'DMMedium', fontSize: 10, color: c.white}}>{action.label}</Text>
+            <Marquee style={{fontFamily: 'DMMedium', fontSize: 10, color: c.white}}>{action.label}</Marquee>
           </AnimatedPressable>)}
         </Animated.View>
       </BlurTarget>
@@ -346,8 +393,14 @@ function DanaSiap() {
   // null = follow the default: money recorded in the last days of a period is next month's money.
   const [forNextPeriod, setForNextPeriod] = useState<boolean | null>(null);
   const [shopDraft, setShopDraft] = useState<ShopDraft[]>([]);
-  const [shopDueDay, setShopDueDay] = useState('1');
-  const [shopMode, setShopMode] = useState<'edit' | 'buy'>('edit');
+  // Shopping sheet: 'edit' is the list, 'item' the form for one item, 'buy' the shopping trip.
+  const [shopMode, setShopMode] = useState<'edit' | 'buy' | 'item'>('edit');
+  const [shopForm, setShopForm] = useState<ShopForm | null>(null);
+  const [shopDayOpen, setShopDayOpen] = useState(false);
+  const [shopQuery, setShopQuery] = useState('');
+  const [needQuery, setNeedQuery] = useState('');
+  const [txQuery, setTxQuery] = useState('');
+  const [dailyForm, setDailyForm] = useState<DailyForm | null>(null);
   const [tokenAmount, setTokenAmount] = useState('');
   const [tokenKwh, setTokenKwh] = useState('');
   const [meterKwh, setMeterKwh] = useState('');
@@ -458,9 +511,9 @@ function DanaSiap() {
     if (next === 'expense' || next === 'income' || next === 'need') setForm({title: '', amount: '', date: today, category: 'Makan', kind: 'recurring', interval: '7', saved: '', priority: 'essential'});
     if (next === 'setup') setProfile({name: state.profile.name, dailyIncome: state.profile.dailyIncome ? formatThousands(state.profile.dailyIncome) : '', periodStartDay: String(state.profile.periodStartDay ?? 1), openingBalance: state.profile.openingBalance ? formatThousands(state.profile.openingBalance) : '', workDays: [...state.profile.workDays], activityAllowance: state.profile.activityAllowance ? formatThousands(state.profile.activityAllowance) : '', payrollCycle: state.profile.payrollCycle ?? 'daily', payday: String(state.profile.payday ?? 5), avatarUrl: state.profile.avatarUrl, working: state.profile.working !== false});
     if (next === 'expense' || next === 'income') {setUseLeftover(null); setForNextPeriod(false);}
-    if (next === 'setup') setDailyDraft((state.dailyItems ?? migrateDailyBudget(state, today).dailyItems ?? []).map(item => ({id: item.id, title: item.title, amount: formatThousands(item.amount), days: [...item.days], skipHolidays: item.skipHolidays})));
+    if (next === 'setup') {setDailyForm(null); setDailyDraft((state.dailyItems ?? migrateDailyBudget(state, today).dailyItems ?? []).map(item => ({id: item.id, title: item.title, amount: formatThousands(item.amount), days: [...item.days], skipHolidays: item.skipHolidays})));}
     if (next === 'check') setCheckAmount('');
-    if (next === 'shopping') {setShopMode('edit'); setShopDraft((state.shopping?.items ?? []).map(item => ({id: item.id, name: item.name, qty: String(item.qty).replace('.', ','), price: formatThousands(item.price), skip: Boolean(item.skip), bought: false, image: item.image}))); setShopDueDay(String(state.shopping?.dueDay ?? state.profile.periodStartDay ?? 1));}
+    if (next === 'shopping') {setShopMode('edit'); setShopForm(null); setShopQuery(''); setShopDayOpen(false); setShopDraft((state.shopping?.items ?? []).map(shopDraftOf));}
     if (next === 'token') {setTokenAmount(electricity.typicalAmount ? formatThousands(electricity.typicalAmount) : ''); setTokenKwh(''); setMeterKwh(''); setElecBudget(state.electricity?.monthlyBudget ? formatThousands(state.electricity.monthlyBudget) : ''); setElecPower(state.electricity?.power);}
     if (next === 'gas') {setGasAmount(gas.typicalAmount ? formatThousands(gas.typicalAmount) : ''); setGasSize(gas.size !== undefined && (GAS_SIZES as readonly number[]).includes(gas.size) ? gas.size : 3); setGasCount('1'); setGasBudget(state.gas?.monthlyBudget ? formatThousands(state.gas.monthlyBudget) : '');}
     if (next === 'attendance') {
@@ -508,7 +561,7 @@ function DanaSiap() {
     const from = !on ? 0 : useLeftover === null ? checkPurchase(budget, amount).fromLeftover : Math.min(pot, amount);
     const rest = amount - from;
     const impact = spendingImpact(budget, amount, from);
-    const hint = form.date !== today ? '' : impact.cashShort > 0 ? `Uangnya belum ada. Yang bisa dipakai sekarang ${currency(Math.max(0, budget.money - Math.max(0, budget.leftoverPot)))}.` : impact.shortfall > 0 ? `Uang wajib jadi kurang ${currency(impact.shortfall)}.` : rest > Math.max(0, budget.leftToday) ? `Jatah jajan jadi ${currency(impact.perDayAfter)}/hari sampai ${shortDate(budget.end)}.` : from > 0 ? `${rest > 0 ? `${currency(rest)} dari jatah hari ini + ` : ''}${currency(from)} dari Uang Sisa (Uang Sisa tinggal ${currency(pot - from)}).` : 'Masih masuk jatah jajan hari ini.';
+    const hint = form.date !== today ? '' : impact.cashShort > 0 ? `Uangnya belum ada. Yang bisa dipakai sekarang ${currency(Math.max(0, budget.money - Math.max(0, budget.leftoverPot)))}.` : impact.shortfall > 0 ? `Uang untuk tagihan jadi kurang ${currency(impact.shortfall)}.` : rest > Math.max(0, budget.leftToday) ? `Jatah jajan jadi ${currency(impact.perDayAfter)}/hari sampai ${shortDate(budget.end)}.` : from > 0 ? `${rest > 0 ? `${currency(rest)} dari jatah hari ini + ` : ''}${currency(from)} dari Uang Sisa (Uang Sisa tinggal ${currency(pot - from)}).` : 'Masih masuk jatah jajan hari ini.';
     return {available, on, from, hint};
   }
   function act(action: FinancialAction, message: string) {
@@ -570,7 +623,7 @@ function DanaSiap() {
       for (const compress of [0.7, 0.5, 0.35]) {
         const small = await manipulateAsync(result.assets[0].uri, [{resize: {width: 200, height: 200}}], {compress, format: SaveFormat.JPEG, base64: true});
         const image = `data:image/jpeg;base64,${small.base64}`;
-        if (small.base64 && image.length <= MAX_ITEM_IMAGE) {editShop(id, {image}); return;}
+        if (small.base64 && image.length <= MAX_ITEM_IMAGE) {setShopForm(f => f && f.id === id ? {...f, image} : f); return;}
       }
       notify('Foto terlalu besar. Coba foto lain.', 'error');
     } catch {
@@ -582,7 +635,61 @@ function DanaSiap() {
   }
   function editShop(id: string, changes: Partial<ShopDraft>) { setShopDraft(list => list.map(d => d.id === id ? {...d, ...changes} : d)); }
   const shopLine = (item: ShopDraft) => {const qty = decimal(item.qty || '1'); return qty > 0 ? Math.round(qty * number(item.price || '0')) : 0;};
-  function editDaily(id: string, changes: Partial<DailyDraft>) { setDailyDraft(list => list.map(d => d.id === id ? {...d, ...changes} : d)); }
+  // ─── Daily items: list in the setup sheet, one item at a time in its own form ───
+  function openDailyItem(draft?: DailyDraft) {
+    setFormError('');
+    setDailyForm(draft ? {...draft, days: [...draft.days], isNew: false} : {id: uid(), title: '', amount: '', days: [0, 1, 2, 3, 4, 5, 6], skipHolidays: true, isNew: true});
+  }
+  function editDailyForm(changes: Partial<DailyForm>) { setDailyForm(f => f && {...f, ...changes}); }
+  function dailyFormCheck(form: DailyForm): {status: 'empty' | 'clean' | 'valid' | 'invalid'; draft?: DailyDraft; error?: string} {
+    const title = form.title.trim();
+    if (form.isNew && !title && !form.amount) return {status: 'empty', error: 'Tulis nama pengeluaran hariannya dulu.'};
+    if (!title) return {status: 'invalid', error: 'Tulis nama pengeluaran hariannya dulu.'};
+    const amount = number(form.amount || '0');
+    if (!Number.isSafeInteger(amount) || amount <= 0) return {status: 'invalid', error: `Isi nominal per hari untuk ${title}.`};
+    if (!form.days.length) return {status: 'invalid', error: `Pilih minimal satu hari untuk ${title}.`};
+    const draft: DailyDraft = {id: form.id, title, amount: formatThousands(amount), days: [...form.days].sort((a, b) => a - b), skipHolidays: form.skipHolidays};
+    const old = dailyDraft.find(d => d.id === form.id);
+    const same = old && old.title.trim() === draft.title && number(old.amount) === amount && old.skipHolidays === draft.skipHolidays && [...old.days].sort((a, b) => a - b).join() === draft.days.join();
+    return {status: same ? 'clean' : 'valid', draft};
+  }
+  /** Keeps the list in the sheet and, once the plan exists, saves it right away (no separate "save list"). */
+  function commitDaily(list: DailyDraft[]) {
+    setDailyDraft(list);
+    if (!started) return true;
+    try {
+      const base = current.current.dailyItems === undefined ? migrateDailyBudget(current.current, today) : current.current;
+      persist(reducer(base, {type: 'daily/set', items: list.map(d => ({id: d.id, title: d.title.trim(), amount: number(d.amount), days: d.days, skipHolidays: d.skipHolidays}))}));
+      return true;
+    } catch (error) {setFormError(error instanceof Error ? error.message : 'Periksa kembali isianmu.'); return false;}
+  }
+  function leaveDailyForm(after: 'list' | 'close') { setFormError(''); if (after === 'close') setSheet(null); else setDailyForm(null); }
+  /** Save button: an empty or incomplete form explains what is missing instead of closing. */
+  function saveDailyForm(after: 'list' | 'close' = 'list', explicit = true) {
+    if (!dailyForm) return;
+    const check = dailyFormCheck(dailyForm);
+    if (check.status === 'invalid' || (explicit && check.status === 'empty')) {setFormError(check.error ?? ''); return;}
+    if (check.status === 'valid' && check.draft) {
+      const draft = check.draft;
+      const list = dailyDraft.some(d => d.id === draft.id) ? dailyDraft.map(d => d.id === draft.id ? draft : d) : [...dailyDraft, draft];
+      if (!commitDaily(list)) return;
+      notify(started ? `${draft.title} tersimpan · ${currency(number(draft.amount))}/hari.` : `${draft.title} ditambahkan.`);
+    }
+    leaveDailyForm(after);
+  }
+  /** Back / close from the form: valid edits are kept, an empty new item is dropped, a half-filled one asks. */
+  function leaveDailyFormSafely(after: 'list' | 'close') {
+    if (!dailyForm) return;
+    const check = dailyFormCheck(dailyForm);
+    if (check.status === 'invalid') showDialog('Belum lengkap', `${check.error} Atau buang perubahan ini.`, [{text: 'Lengkapi', style: 'cancel'}, {text: 'Buang perubahan', style: 'destructive', onPress: () => leaveDailyForm(after)}], {icon: 'edit-3'});
+    else saveDailyForm(after, false);
+  }
+  function deleteDailyItem() {
+    if (!dailyForm) return;
+    const {id} = dailyForm;
+    const name = dailyDraft.find(d => d.id === id)?.title.trim() || 'pengeluaran ini';
+    showDialog(`Hapus ${name}?`, 'Pengeluaran harian ini tidak dicatat otomatis lagi mulai hari ini. Catatan hari-hari sebelumnya tetap ada.', [{text: 'Batal', style: 'cancel'}, {text: 'Hapus', style: 'destructive', onPress: () => {if (commitDaily(dailyDraft.filter(d => d.id !== id))) {leaveDailyForm('list'); notify(`${name} dihapus.`);}}}], {icon: 'trash-2'});
+  }
   async function pickAvatar() {
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -620,8 +727,10 @@ function DanaSiap() {
     }
   }
   function removeAvatar() {
-    if (dispatch({type: 'profile/update', profile: {avatarUrl: undefined}})) notify('Foto profil dihapus.');
-    setProfile(p => ({...p, avatarUrl: undefined}));
+    showDialog('Hapus foto profil?', 'Fotomu diganti inisial nama.', [{text: 'Batal', style: 'cancel'}, {text: 'Hapus foto', style: 'destructive', onPress: () => {
+      if (dispatch({type: 'profile/update', profile: {avatarUrl: undefined}})) notify('Foto profil dihapus.');
+      setProfile(p => ({...p, avatarUrl: undefined}));
+    }}], {icon: 'image'});
   }
   function recordAttendance() {
     const income = attStatus === 'absent' || attStatus === 'holiday' ? 0 : number(attIncome);
@@ -658,7 +767,7 @@ function DanaSiap() {
   function markDaily(item: DailyItem, date: string, amount: number, event?: GestureResponderEvent) {
     const label = date === today ? 'hari ini' : shortDate(date);
     const before = current.current;
-    if (act({type: 'daily/leftover', itemId: item.id, date, amount}, amount === 0 ? `${item.title} ${label} kembali dihitung terpakai.` : amount === item.amount ? `${item.title} ${label} nggak dipakai · +${currency(amount)} ke Uang Sisa.` : `Sisa ${item.title} ${label} ${currency(amount)} masuk Uang Sisa.`)) sendToLeftover(pointOf(event), before);
+    if (act({type: 'daily/leftover', itemId: item.id, date, amount}, amount === 0 ? `${item.title} ${label} kembali dihitung terpakai.` : amount === item.amount ? `${item.title} ${label} tidak dipakai · ${currency(amount)} masuk Uang Sisa.` : `Sisa ${item.title} ${label} ${currency(amount)} masuk Uang Sisa.`)) sendToLeftover(pointOf(event), before);
   }
   function openDailyLeftover(item: DailyItem, date: string) {
     const existing = dailyLeftoverOf(item.id, date);
@@ -678,47 +787,85 @@ function DanaSiap() {
   }
   function openShopping(mode: 'edit' | 'buy') {
     open('shopping');
-    setShopMode(mode);
+    if (mode === 'buy') startBuying();
   }
-  function shoppingItemsFromDraft() {
-    const items = [];
-    for (const draft of shopDraft) {
-      if (!draft.name.trim() && !draft.price) continue;
-      const qty = decimal(draft.qty || '1');
-      if (!draft.name.trim()) {setFormError('Tulis nama setiap barang belanja.'); return null;}
-      if (!(qty > 0) || qty > 100_000) {setFormError(`Jumlah ${draft.name.trim()} harus lebih dari 0.`); return null;}
-      items.push({id: draft.id, name: draft.name.trim(), qty, price: number(draft.price || '0'), ...(draft.skip ? {skip: true} : {}), ...(draft.image ? {image: draft.image} : {})});
+  const shopDueDay = state.shopping?.dueDay ?? state.profile.periodStartDay ?? 1;
+  /** Every change to the list is saved at once: the list view never needs its own "save" button. */
+  function saveShoppingItems(items: ShoppingItem[], dueDay = current.current.shopping?.dueDay ?? shopDueDay) { return dispatch({type: 'shopping/set', items, dueDay}); }
+  function toggleShopSkip(id: string) {
+    const items = current.current.shopping?.items ?? [];
+    const item = items.find(i => i.id === id);
+    if (!item) return;
+    const {skip, ...rest} = item;
+    saveShoppingItems(items.map(i => i.id === id ? (skip ? rest : {...rest, skip: true}) : i));
+  }
+  function setShopDay(dueDay: number) { saveShoppingItems(current.current.shopping?.items ?? [], dueDay); }
+  function startBuying() {
+    const items = current.current.shopping?.items ?? [];
+    if (!items.some(item => !item.skip)) {notify('Belum ada barang yang perlu dibeli. Tambah barang dulu.', 'error'); return;}
+    setFormError(''); setShopDraft(items.map(shopDraftOf)); setShopMode('buy');
+  }
+  function openShopItem(item?: ShoppingItem) {
+    setFormError('');
+    setShopForm(item ? {...shopDraftOf(item), isNew: false} : {id: uid(), name: '', qty: '1', price: '', skip: false, bought: false, isNew: true});
+    setShopMode('item');
+  }
+  function editShopForm(changes: Partial<ShopForm>) { setShopForm(f => f && {...f, ...changes}); }
+  function shopFormCheck(form: ShopForm): {status: 'empty' | 'clean' | 'valid' | 'invalid'; item?: ShoppingItem; error?: string} {
+    const name = form.name.trim();
+    if (form.isNew && !name && !form.price && !form.image) return {status: 'empty', error: 'Tulis nama barangnya dulu.'};
+    if (!name) return {status: 'invalid', error: 'Tulis nama barangnya dulu.'};
+    const qty = decimal(form.qty || '1');
+    if (!(qty > 0) || qty > 100_000) return {status: 'invalid', error: `Jumlah ${name} harus lebih dari 0.`};
+    const price = number(form.price || '0');
+    if (!Number.isSafeInteger(price) || price < 0) return {status: 'invalid', error: 'Harga harus rupiah bulat.'};
+    const item: ShoppingItem = {id: form.id, name, qty, price, ...(form.skip ? {skip: true} : {}), ...(form.image ? {image: form.image} : {})};
+    const saved = current.current.shopping?.items.find(i => i.id === form.id);
+    const key = (i: ShoppingItem) => JSON.stringify([i.name, i.qty, i.price, Boolean(i.skip), i.image ?? '']);
+    return {status: saved && key(saved) === key(item) ? 'clean' : 'valid', item};
+  }
+  function leaveShopForm(after: 'list' | 'close') { setFormError(''); if (after === 'close') setSheet(null); else setShopMode('edit'); }
+  /** Simpan: saves this one item into the list; an empty or incomplete form explains what is missing. */
+  function saveShopForm(after: 'list' | 'close' = 'list', explicit = true) {
+    if (!shopForm) return;
+    const check = shopFormCheck(shopForm);
+    if (check.status === 'invalid' || (explicit && check.status === 'empty')) {setFormError(check.error ?? ''); return;}
+    if (check.status === 'valid' && check.item) {
+      const item = check.item;
+      const items = current.current.shopping?.items ?? [];
+      const next = items.some(i => i.id === item.id) ? items.map(i => i.id === item.id ? item : i) : [...items, item];
+      if (!saveShoppingItems(next)) return;
+      notify(`${item.name} tersimpan · total belanja ${currency(shoppingTotal({items: next, dueDay: shopDueDay}))}.`);
     }
-    return items;
+    leaveShopForm(after);
   }
-  /** The shopping draft differs from the saved list (ignoring completely empty rows). */
-  function shoppingDirty() {
-    const draft = shopDraft.filter(d => d.name.trim() || d.price).map(d => [d.id, d.name.trim(), decimal(d.qty || '1'), number(d.price || '0'), d.skip, d.image ?? '']);
-    const saved = (state.shopping?.items ?? []).map(i => [i.id, i.name, i.qty, i.price, Boolean(i.skip), i.image ?? '']);
-    return JSON.stringify(draft) !== JSON.stringify(saved) || number(shopDueDay || '1') !== (state.shopping?.dueDay ?? number(shopDueDay || '1'));
+  /** Back / close from the form: valid edits are kept, an empty new item is dropped, a half-filled one asks. */
+  function leaveShopFormSafely(after: 'list' | 'close') {
+    if (!shopForm) return;
+    const check = shopFormCheck(shopForm);
+    if (check.status === 'invalid') showDialog('Barangnya belum lengkap', `${check.error} Atau buang perubahan ini.`, [{text: 'Lengkapi', style: 'cancel'}, {text: 'Buang perubahan', style: 'destructive', onPress: () => leaveShopForm(after)}], {icon: 'edit-3'});
+    else saveShopForm(after, false);
   }
-  /** X, backdrop and Back all close through here, so a half-typed shopping list is never lost silently. */
+  function deleteShopItem() {
+    if (!shopForm) return;
+    const {id} = shopForm;
+    const name = current.current.shopping?.items.find(i => i.id === id)?.name || 'barang ini';
+    showDialog(`Hapus ${name}?`, 'Barang ini dihapus dari daftar belanja bulanan.', [{text: 'Batal', style: 'cancel'}, {text: 'Hapus', style: 'destructive', onPress: () => {if (saveShoppingItems((current.current.shopping?.items ?? []).filter(i => i.id !== id))) {leaveShopForm('list'); notify(`${name} dihapus dari daftar belanja.`);}}}], {icon: 'trash-2'});
+  }
+  /** Backdrop and the X button close the sheet; an open item form is saved first when it is valid. */
   function closeSheet(force = false) {
     // Back/backdrop first put the keyboard away; the X button always closes.
     if (keyboardHeight > 0) {Keyboard.dismiss(); if (!force) return;}
-    if (sheet === 'shopping' && shopMode === 'edit' && shoppingDirty()) {
-      if (shopDraft.every(d => d.name.trim() || !d.price)) {saveShopping(); return;}
-      showDialog('Ada barang tanpa nama', 'Tulis nama setiap barang supaya daftarnya bisa disimpan.', [{text: 'Lengkapi', style: 'cancel'}, {text: 'Tutup tanpa simpan', style: 'destructive', onPress: () => setSheet(null)}]);
-      return;
-    }
+    if (sheet === 'shopping' && shopMode === 'item' && shopForm) {leaveShopFormSafely('close'); return;}
+    if (sheet === 'setup' && dailyForm) {leaveDailyFormSafely('close'); return;}
     setSheet(null);
   }
-  function saveShopping(thenBuy = false) {
-    const items = shoppingItemsFromDraft();
-    if (!items) return;
-    const dueDay = number(shopDueDay || '1');
-    if (dueDay < 1 || dueDay > 28) {setFormError('Tanggal belanja harus antara 1 dan 28.'); return;}
-    if (!dispatch({type: 'shopping/set', items, dueDay})) return;
-    if (thenBuy) {
-      if (!items.some(item => !item.skip)) {setFormError('Belum ada barang yang perlu dibeli.'); return;}
-      setShopDraft(items.map(item => ({id: item.id, name: item.name, qty: String(item.qty).replace('.', ','), price: formatThousands(item.price), skip: Boolean(item.skip), bought: false, image: item.image})));
-      setShopMode('buy');
-    } else {setSheet(null); notify(`Daftar belanja tersimpan · ${currency(shoppingTotal({items, dueDay}))}.`);}
+  /** Hardware Back and the ← button: an item form returns to its list first. */
+  function backSheet(force = false) {
+    if (keyboardHeight > 0) {Keyboard.dismiss(); if (!force) return;}
+    if (sheet === 'shopping' && shopMode === 'item' && shopForm) {leaveShopFormSafely('list'); return;}
+    if (sheet === 'setup' && dailyForm) {leaveDailyFormSafely('list'); return;}
+    closeSheet(force);
   }
   function finishShopping(event?: GestureResponderEvent) {
     const items = [];
@@ -823,21 +970,23 @@ function DanaSiap() {
     });
   }
 
-  function NeedRow({need, compact = false}: {need: Need; compact?: boolean}) {
+  // A plain function (not a component defined in render) so rows are not remounted on every render.
+  function needRow(need: Need, compact = false) {
     const risk = projection.risks.find(r => r.needId === need.id);
     return (
       <AnimatedPressable
+        key={need.id}
         accessibilityLabel={`Detail ${need.title}`}
         onPress={() => {setFormError(''); setRescheduleDate(need.dueDate); setAllocatedInput(formatThousands(need.saved)); setEditingNeed(need);}}
         style={{gap: 10, paddingVertical: 5}}
       >
         <View style={[s.row, {gap: 11}]}>
           <View style={[s.needIcon, {backgroundColor: need.kind === 'debt' ? '#ECF2DE' : '#F4F7EE'}]}>
-            <Icon name={need.kind === 'debt' ? 'credit-card' : need.kind === 'recurring' ? 'zap' : 'target'} size={18} />
+            <Icon name={needIcon(need)} size={18} />
           </View>
           <View style={{flex: 1, gap: 4}}>
-            <Text style={s.listTitle}>{need.title}</Text>
-            <Text style={s.mini}>{shortDate(need.dueDate)} · {need.kind === 'recurring' ? `Setiap ${need.intervalDays} hari` : need.kind === 'debt' ? 'Utang' : 'Target'}</Text>
+            <Marquee style={s.listTitle}>{need.title}</Marquee>
+            <Marquee style={s.mini}>{`${shortDate(need.dueDate)} · ${need.kind === 'recurring' ? `Setiap ${need.intervalDays} hari` : need.kind === 'debt' ? 'Utang' : 'Target'}`}</Marquee>
           </View>
           <View style={{alignItems: 'flex-end', gap: 3}}>
             <Text style={s.amount}>{currency(remainingAmount(need))}</Text>
@@ -847,7 +996,7 @@ function DanaSiap() {
         {!compact && (
           <>
             <View style={s.progress}><View style={[s.progressFill, {width: `${Math.min(100, need.saved / need.amount * 100)}%`}]} /></View>
-            <View style={s.between}><Text style={s.mini}>Dialokasikan {currency(need.saved)}</Text><Text style={s.mini}>{Math.round(need.saved / need.amount * 100)}%</Text></View>
+            <View style={s.between}><Text style={s.mini}>Sudah disisihkan {currency(need.saved)}</Text><Text style={s.mini}>{Math.round(need.saved / need.amount * 100)}%</Text></View>
           </>
         )}
       </AnimatedPressable>
@@ -889,16 +1038,16 @@ function DanaSiap() {
     const left = dailyLeftoverOf(item.id, date);
     const recorded = state.transactions.some(t => t.id === dailyTransactionId(item.id, date));
     const unused = left >= item.amount;
-    const status = unused ? `Nggak dipakai · +${currency(left)} ke uang sisa` : left > 0 ? `Terpakai ${currency(item.amount - left)} · sisa ${currency(left)}` : recorded ? 'Tercatat otomatis' : date > today ? 'Terjadwal · tercatat otomatis di harinya' : 'Terjadwal';
+    const status = unused ? `Tidak dipakai · ${currency(left)} masuk Uang Sisa` : left > 0 ? `Terpakai ${currency(item.amount - left)} · ${currency(left)} masuk Uang Sisa` : recorded ? 'Tercatat otomatis' : date > today ? 'Terjadwal · tercatat otomatis di harinya' : 'Terjadwal';
     return <View key={item.id} style={{gap: 9, paddingVertical: 4}}>
       <View style={[s.row, {gap: 11}]}>
         <View style={[s.needIcon, {backgroundColor: unused ? '#F4F6F0' : '#ECF2DE'}]}><Icon name={unused ? 'slash' : left > 0 ? 'corner-down-left' : 'check'} size={17} /></View>
-        <View style={{flex: 1, gap: 4}}><Text style={s.listTitle}>{item.title}</Text><Text style={[s.mini, left > 0 && {color: '#5E7F2A'}]}>{status}</Text></View>
+        <View style={{flex: 1, gap: 4}}><Marquee style={s.listTitle}>{item.title}</Marquee><CrossBlur k={status} variant="value"><Marquee style={[s.mini, left > 0 && {color: '#5E7F2A'}]}>{status}</Marquee></CrossBlur></View>
         <Text style={[s.amount, unused && {color: c.muted, textDecorationLine: 'line-through'}]}>{currency(item.amount)}</Text>
       </View>
       <StaggerList style={[s.row, {gap: 7, flexWrap: 'wrap'}]}>
         {!unused && <TinyButton label="Nggak dipakai" onPress={e => markDaily(item, date, item.amount, e)} />}
-        <TinyButton label="Ada sisa…" onPress={() => openDailyLeftover(item, date)} />
+        <TinyButton label="Ada sisa" onPress={() => openDailyLeftover(item, date)} />
         {left > 0 && <TinyButton label="Batalkan" onPress={() => markDaily(item, date, 0)} />}
       </StaggerList>
     </View>;
@@ -913,34 +1062,34 @@ function DanaSiap() {
     <PanelNotch />
     <View style={s.between}><Text style={s.mini}>{`${shortDate(budget.start)} – ${shortDate(budget.end)} · ${budget.daysLeft === 1 ? 'hari terakhir' : `${budget.daysLeft} hari lagi`}`}</Text><Icon name="calendar" size={15} color={c.muted} /></View>
     <View>
-      <Text style={s.mini}>Boleh jajan hari ini</Text>
+      <Text style={s.mini}>Bisa dipakai jajan hari ini</Text>
       <RollingValue value={currency(Math.max(0, budget.leftToday))} bg={c.white} containerStyle={{alignSelf: 'flex-start', marginTop: 2}} style={[s.number, {fontSize: 36}]} />
-      <Text style={[s.mini, budget.leftToday < 0 && {color: c.red}]}>{budget.leftToday < 0 ? `Lebih ${currency(-budget.leftToday)} dari jatah ${currency(budget.perDay)} hari ini` : `dari ${currency(budget.perDay)} · terpakai ${currency(budget.spentToday)}`}</Text>
+      <Text style={[s.mini, budget.leftToday < 0 && {color: c.red}]}>{budget.leftToday < 0 ? `Kelebihan ${currency(-budget.leftToday)} dari jatah hari ini` : `Jatah ${currency(budget.perDay)} · sudah dipakai ${currency(budget.spentToday)}`}</Text>
     </View>
     {budgetNote ? <View style={{backgroundColor: '#F1F6E7', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12}}><Text style={[s.muted, {color: '#55604A'}]}>{budgetNote}</Text></View> : null}
     <View style={[s.row, {gap: 9, padding: 11, borderRadius: 14, backgroundColor: budget.shortfall === 0 ? '#ECF2DE' : budget.coveredByLeftover ? '#FBF3E0' : '#FDF0EE'}]}>
       <Icon name={budget.shortfall === 0 ? 'shield' : 'alert-circle'} size={16} color={budget.shortfall > 0 && !budget.coveredByLeftover ? c.red : c.ink} />
-      <Text style={[s.body, {flex: 1}, budget.shortfall > 0 && !budget.coveredByLeftover && {color: c.red}]}>{budget.shortfall === 0 ? '✓ Wajib aman' : budget.coveredByLeftover ? `Wajib aman kalau pakai ${currency(budget.shortfall)} dari Uang Sisa` : `Wajib kurang ${currency(budget.shortfall)}${budget.shortfallDate ? ` mulai ${shortDate(budget.shortfallDate)}` : ''}`}</Text>
+      <Text style={[s.body, {flex: 1, lineHeight: 17}, budget.shortfall > 0 && !budget.coveredByLeftover && {color: c.red}]}>{budget.shortfall === 0 ? '✓ Uang untuk tagihan & kebutuhan cukup' : budget.coveredByLeftover ? `Cukup, asal pakai ${currency(budget.shortfall)} dari Uang Sisa` : `Uang kurang ${currency(budget.shortfall)} untuk tagihan & kebutuhan${budget.shortfallDate ? ` (mulai ${shortDate(budget.shortfallDate)})` : ''}`}</Text>
     </View>
     <Collapse visible={showBreakdown}><StaggerList visible={showBreakdown} origin="bottom" bg={c.white} style={{gap: 8}}>
-      {line('Uang sekarang', currency(budget.money))}
-      {budget.expectedIncome > 0 && line('+ Pemasukan yang masih akan masuk', currency(budget.expectedIncome))}
-      {line('− Kebutuhan wajib', currency(budget.obligations))}
-      {line('− Pengeluaran harian sisa periode', currency(budget.dailyRemaining))}
-      {budget.reservedAfterPeriod > 0 && line('− Disiapkan sampai uang berikutnya masuk', currency(budget.reservedAfterPeriod))}
-      {budget.leftoverPot > 0 && line('− Uang sisa (dipisah)', currency(budget.leftoverPot))}
+      {line('Uang yang ada sekarang', currency(budget.money))}
+      {budget.expectedIncome > 0 && line('+ Uang yang akan masuk (gaji/upah)', currency(budget.expectedIncome))}
+      {line(`− Tagihan & kebutuhan sampai ${shortDate(budget.end)}`, currency(budget.obligations))}
+      {line(`− Ongkos & uang harian sampai ${shortDate(budget.end)}`, currency(budget.dailyRemaining))}
+      {budget.reservedAfterPeriod > 0 && line('− Disimpan untuk kebutuhan sebelum uang berikutnya masuk', currency(budget.reservedAfterPeriod))}
+      {budget.leftoverPot > 0 && line('− Uang Sisa (disimpan terpisah)', currency(budget.leftoverPot))}
       <View style={s.divider} />
-      {line('= Uang bebas sampai akhir periode', currency(budget.freeMoney), true)}
-      {line(budget.cashLimitedUntil || (budget.perDay === 0 && budget.freeMoney > 0) ? 'Jatah per hari (dari uang yang sudah ada)' : `÷ ${budget.daysLeft} hari${budget.spentToday > 0 ? ` (termasuk jajan hari ini ${currency(budget.spentToday)})` : ''}`, `${currency(budget.perDay)}/hari`)}
-      {line('Aman dipakai sekarang', currency(budget.safeNow))}
-      {budget.nextPeriodIncome ? <Text style={s.muted}>{`Gaji ± ${currency(budget.nextPeriodIncome.amount)} tanggal ${shortDate(budget.nextPeriodIncome.date)} masuk di akhir periode, jadi dihitung untuk periode berikutnya.`}</Text> : null}
+      {line(budget.freeMoney < 0 ? `= Kurang sampai ${shortDate(budget.end)}` : `= Sisa untuk jajan sampai ${shortDate(budget.end)}`, currency(budget.freeMoney), true)}
+      {line(budget.cashLimitedUntil || (budget.perDay === 0 && budget.freeMoney > 0) ? 'Jatah jajan per hari (dari uang yang sudah ada)' : `Jatah jajan per hari (dibagi ${budget.daysLeft} hari)`, `${currency(budget.perDay)}/hari`)}
+      {line('Bisa dipakai sekarang tanpa ganggu tagihan', currency(budget.safeNow))}
+      {budget.nextPeriodIncome ? <Text style={s.muted}>{`Gaji ± ${currency(budget.nextPeriodIncome.amount)} tanggal ${shortDate(budget.nextPeriodIncome.date)} masuk di akhir bulan, jadi dihitung untuk bulan berikutnya.`}</Text> : null}
       <View style={s.divider} />
-      {budget.carryOver > 0 && line('Sisa periode lalu', currency(budget.carryOver))}
-      {line('Uang masuk periode ini', currency(budget.periodIncome))}
-      {budget.heldForNextPeriod > 0 && <Text style={s.muted}>{currency(budget.heldForNextPeriod)} disimpan untuk periode berikutnya, belum dihitung di sini.</Text>}
+      {budget.carryOver > 0 && line('Sisa dari bulan lalu', currency(budget.carryOver))}
+      {line('Uang masuk bulan ini', currency(budget.periodIncome))}
+      {budget.heldForNextPeriod > 0 && <Text style={s.muted}>{currency(budget.heldForNextPeriod)} disimpan untuk bulan berikutnya, belum dihitung di sini.</Text>}
     </StaggerList></Collapse>
     <View style={[s.row, {gap: 8}]}>
-      <View style={{flex: 1}}><Button title={showBreakdown ? 'Tutup hitungan' : 'Lihat hitungan'} secondary icon={showBreakdown ? 'chevron-up' : 'list'} onPress={() => setShowBreakdown(!showBreakdown)} /></View>
+      <View style={{flex: 1}}><Button title={showBreakdown ? 'Tutup rincian' : 'Lihat rinciannya'} secondary icon={showBreakdown ? 'chevron-up' : 'list'} onPress={() => setShowBreakdown(!showBreakdown)} /></View>
       <View style={{flex: 1}}><Button title="Cek sebelum beli" icon="search" onPress={() => open('check')} /></View>
     </View>
   </View>;
@@ -951,7 +1100,7 @@ function DanaSiap() {
   </View>;
   const leftoverCard = <Animated.View style={{transform: [{scale: potPop}]}}><AnimatedPressable viewRef={leftoverRef} accessibilityLabel="Buka Uang Sisa" onPress={() => open('leftover')} style={[s.section, {flexDirection: 'row', alignItems: 'center', gap: 13}]}>
     <PopIn trigger={heldPot === null ? budget.leftoverPot : 'held'} style={[s.needIcon, {backgroundColor: c.lime}]}><Icon name="archive" size={18} /></PopIn>
-    <View style={{flex: 1, gap: 3}}><Text style={s.mini}>UANG SISA PERIODE INI</Text><RollingValue value={currency(heldPot ?? Math.max(0, budget.leftoverPot))} bg={c.white} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {fontSize: 24}]} /><Text style={s.mini}>{budget.leftovers.length ? `${budget.leftovers.length} catatan · sudah dipakai ${currency(budget.leftoverUsed)}` : 'Uang rencana yang nggak kepakai terkumpul di sini.'}</Text></View>
+    <View style={{flex: 1, gap: 3}}><Text style={s.mini}>UANG SISA BULAN INI</Text><RollingValue value={currency(heldPot ?? Math.max(0, budget.leftoverPot))} bg={c.white} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {fontSize: 24}]} /><Text style={s.mini}>{budget.leftovers.length ? `${budget.leftovers.length} catatan · sudah dipakai ${currency(budget.leftoverUsed)}` : 'Uang yang nggak jadi dipakai, misal ongkos saat anak libur'}</Text></View>
     <Icon name="chevron-right" />
   </AnimatedPressable></Animated.View>;
 
@@ -997,7 +1146,7 @@ function DanaSiap() {
 
       {/* Safe to spend section */}
       <View style={{marginTop: 18}}>
-        <Text style={[s.cardLabel, {fontSize: 9.5, letterSpacing: 1.2, color: '#97A588'}]}>AMAN DIPAKAI SEKARANG</Text>
+        <Text style={[s.cardLabel, {fontSize: 9.5, letterSpacing: 1.2, color: '#97A588'}]}>BISA DIPAKAI SEKARANG</Text>
         <RollingValue value={currency(budget.safeNow)} bg={c.ink} containerStyle={{alignSelf: 'flex-start', marginTop: 3}} style={[s.cardBalance, {fontSize: 24, color: c.lime, marginTop: 0}]} />
       </View>
 
@@ -1089,7 +1238,7 @@ function DanaSiap() {
         activeNeeds.slice(0, 3).map((need, i) => (
           <React.Fragment key={need.id}>
             {i > 0 && <View style={s.divider} />}
-            <NeedRow need={need} compact />
+            {needRow(need, true)}
           </React.Fragment>
         ))
       ) : (
@@ -1109,7 +1258,7 @@ function DanaSiap() {
                 <Icon name={t.type === 'income' ? 'arrow-down-left' : 'shopping-bag'} size={17} color={c.white} />
               </View>
               <View style={{flex: 1, gap: 4}}>
-                <Text style={s.listTitle}>{t.title}</Text>
+                <Marquee style={s.listTitle}>{t.title}</Marquee>
                 <Text style={s.mini}>{shortDate(t.date)} · {t.category}</Text>
               </View>
               <Text style={s.amount}>{t.type === 'income' ? '+' : '−'}{currency(t.amount)}</Text>
@@ -1142,14 +1291,14 @@ function DanaSiap() {
     </ScrollView>
     <View style={[s.row, {gap: 10}]}>
       <View style={s.stat}>
-        <Text style={s.mini}>Sudah dialokasikan</Text>
+        <Text style={s.mini}>Sudah disisihkan</Text>
         <RollingValue value={currency(projection.allocated)} bg={c.lime} containerStyle={{alignSelf: 'flex-start'}} style={s.number} />
         <Icon name="layers" />
       </View>
       <View style={[s.stat, {backgroundColor: c.ink}]}>
-        <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? 'Target / hari kerja' : 'Aman dipakai sekarang'}</Text>
+        <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? 'Target / hari kerja' : 'Bisa dipakai sekarang'}</Text>
         <RollingValue value={currency(working ? projection.requiredDaily : budget.safeNow)} bg={c.ink} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {color: c.white}]} />
-        <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? `${projection.workdays} hari kerja dalam periode` : 'Setelah semua kebutuhan wajib'}</Text>
+        <Text style={[s.mini, {color: '#B3BDA8'}]}>{working ? `${projection.workdays} hari kerja dalam ${period} hari ke depan` : 'Setelah tagihan & kebutuhan'}</Text>
       </View>
     </View>
     <View style={s.section}>
@@ -1161,14 +1310,15 @@ function DanaSiap() {
           <RollingValue value={currency(shoppingTotal(state.shopping))} bg={c.white} containerStyle={{alignSelf: 'flex-start', marginTop: 3}} style={[s.number, {fontSize: 24}]} />
           {state.shopping.lastDone && <Text style={s.mini}>Terakhir belanja {shortDate(state.shopping.lastDone)}</Text>}
         </View>
-        <View style={{gap: 9}}>{state.shopping.items.map(item => <View key={item.id} style={[s.row, {gap: 10}, item.skip && {opacity: .55}]}>
-          {item.image ? <Image source={{uri: item.image}} style={{width: 38, height: 38, borderRadius: 11}} /> : <View style={{width: 38, height: 38, borderRadius: 11, backgroundColor: c.pale, alignItems: 'center', justifyContent: 'center'}}><Icon name="shopping-bag" size={15} color={c.muted} /></View>}
-          <View style={{flex: 1, gap: 2}}><Text style={s.body} numberOfLines={1}>{item.name}</Text><Text style={s.mini}>{item.skip ? 'Masih ada · skip bulan ini' : `${String(item.qty).replace('.', ',')} × ${currency(item.price)}`}</Text></View>
-          <Text style={[s.body, {fontFamily: 'BarlowMedium', fontSize: 15}]}>{item.skip ? '–' : currency(Math.round(item.qty * item.price))}</Text>
-        </View>)}</View>
+        <View style={{gap: 9}}>{state.shopping.items.slice(0, 5).map(item => <AnimatedPressable key={item.id} accessibilityLabel={`Ubah ${item.name}`} onPress={() => {openShopping('edit'); openShopItem(item);}} style={[s.row, {gap: 10}]}>
+          <ShopThumb image={item.image} size={38} />
+          <View style={{flex: 1, gap: 2}}><Marquee style={[s.body, item.skip && {color: c.muted}]}>{item.name}</Marquee><Text style={s.mini}>{item.skip ? 'Stok masih ada · skip bulan ini' : `${String(item.qty).replace('.', ',')} × ${currency(item.price)}`}</Text></View>
+          <Text style={[s.body, {fontFamily: 'BarlowMedium', fontSize: 15}, item.skip && {color: c.muted}]}>{item.skip ? '–' : currency(Math.round(item.qty * item.price))}</Text>
+        </AnimatedPressable>)}</View>
+        {state.shopping.items.length > 5 && <AnimatedPressable accessibilityRole="button" onPress={() => openShopping('edit')} style={{paddingVertical: 4}}><Text style={[s.actionLabel, {textAlign: 'left'}]}>Lihat semua {state.shopping.items.length} barang ↗</Text></AnimatedPressable>}
         <Button title="Mulai belanja" icon="shopping-cart" onPress={() => openShopping('buy')} />
       </> : <>
-        <Text style={s.muted}>Tulis daftar belanja rutin (beras, minyak, sabun…). Totalnya jadi kebutuhan wajib tiap periode.</Text>
+        <Text style={s.muted}>Tulis daftar belanja rutin, misal beras, minyak, sabun. Totalnya otomatis masuk rencana kebutuhan tiap bulan.</Text>
         <Button title="Bikin daftar belanja" secondary icon="plus" onPress={() => openShopping('edit')} />
       </>}
     </View>
@@ -1192,23 +1342,26 @@ function DanaSiap() {
       </View> : <Text style={s.muted}>Catat tiap beli gas, DanaSiap hitung 1 tabung tahan berapa lama dan kapan harus beli lagi.</Text>}
       <Button title="Beli gas" icon="thermometer" secondary={!gas.purchases} onPress={() => open('gas')} />
     </View>
-    {activeNeeds.filter(n => needFilter === 'all' || n.kind === needFilter).map(n => (
-      <Appear style={s.section} key={n.id}>
-        <NeedRow need={n} />
+    <GapCollapse visible={activeNeeds.length >= 5 || Boolean(needQuery)}><SearchField value={needQuery} onChange={setNeedQuery} placeholder="Cari kebutuhan…" /></GapCollapse>
+    {/* Rows stay mounted and fold away (height springs), so filtering never makes the list jump. */}
+    <View style={{marginTop: -16}}>{activeNeeds.map(n => (
+      <Collapse key={n.id} visible={(needFilter === 'all' || n.kind === needFilter) && matches(needQuery, n.title)}><View style={{paddingTop: 16}}><Appear style={s.section}>
+        {needRow(n)}
         <View style={s.between}>
-          <Text style={s.mini}>{n.priority === 'essential' ? '● Kebutuhan wajib' : '○ Jadwal fleksibel'}</Text>
-          <AnimatedPressable onPress={() => {setEditingNeed(n); setRescheduleDate(n.dueDate); setAllocatedInput(String(n.saved)); setFormError('');}}>
+          <Text style={s.mini}>{n.priority === 'essential' ? '● Kebutuhan penting' : '○ Jadwal fleksibel'}</Text>
+          <AnimatedPressable onPress={() => {setEditingNeed(n); setRescheduleDate(n.dueDate); setAllocatedInput(formatThousands(n.saved)); setFormError('');}}>
             <Text style={s.actionLabel}>Atur rencana ↗</Text>
           </AnimatedPressable>
         </View>
-      </Appear>
-    ))}
-    {!activeNeeds.filter(n => needFilter === 'all' || n.kind === needFilter).length && (
+      </Appear></View></Collapse>
+    ))}</View>
+    <GapCollapse visible={!activeNeeds.some(n => needFilter === 'all' || n.kind === needFilter)}>
       <View style={s.section}>
         <Empty text="Belum ada kebutuhan di sini. Mulai dari satu yang paling dekat." />
         <Button title="Tambah kebutuhan" onPress={() => open('need')} icon="plus" />
       </View>
-    )}
+    </GapCollapse>
+    <GapCollapse visible={Boolean(needQuery.trim()) && activeNeeds.some(n => needFilter === 'all' || n.kind === needFilter) && !activeNeeds.some(n => (needFilter === 'all' || n.kind === needFilter) && matches(needQuery, n.title))}><NoMatch query={needQuery} /></GapCollapse>
     <Text style={[s.muted, {textAlign: 'center'}]}>Dana dialokasikan tetap bagian dari saldo.{`\n`}Bayar kebutuhan hanya dihitung sekali.</Text>
   </>;
   const monthStart = new Date(`${selectedDay.slice(0, 7)}-01T12:00:00+07:00`);
@@ -1219,9 +1372,9 @@ function DanaSiap() {
   const selectedWorkday = isWorkday(state, selectedDay);
   const leftoverDates = new Set((state.leftovers ?? []).map(l => l.date));
   const selectedDaily = (state.dailyItems ?? []).filter(item => isScheduled(item, selectedDay) && selectedDay >= item.since);
-  const dailyDay = (state.dailyItems ?? []).length ? <><View style={s.divider} /><Text style={s.fieldLabel}>PENGELUARAN HARIAN</Text>{selectedDaily.length ? selectedDaily.map(item => dailyEntry(item, selectedDay)) : <Text style={s.muted}>Nggak ada pengeluaran harian terjadwal di tanggal ini.</Text>}<Button title="Libur panjang" secondary icon="sun" onPress={() => openSkip()} /></> : null;
+  const dailyDay = (state.dailyItems ?? []).length ? <><View style={s.divider} /><Text style={s.fieldLabel}>PENGELUARAN HARIAN</Text>{selectedDaily.length ? selectedDaily.map(item => dailyEntry(item, selectedDay)) : <Text style={s.muted}>Nggak ada pengeluaran harian terjadwal di tanggal ini.</Text>}<Button title="Tandai libur panjang" secondary icon="sun" onPress={() => openSkip()} /></> : null;
   const renderCalendar = () => <><View><Text style={s.mini}>{working ? 'RITME KERJA, RITME UANG' : 'JADWAL & KEBUTUHAN'}</Text><Text style={[s.title, {fontSize: 33}]}>{working ? 'Kalender kerja' : 'Kalender'}</Text></View><View style={s.section}><View style={s.between}><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan sebelumnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', -1))}><Icon name="chevron-left" /></AnimatedPressable><Text style={s.heading}>{monthStart.toLocaleDateString('id-ID', {month: 'long', year: 'numeric'})}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel="Bulan berikutnya" onPress={() => setSelectedDay(addDays(selectedDay.slice(0, 7) + '-01', monthDays))}><Icon name="chevron-right" /></AnimatedPressable></View><View style={s.calendarGrid}>{weekdays.map(day => <View key={day} style={[s.dayCell, {marginBottom: 4}]}><View style={[s.day, {height: 24}]}><Text style={s.mini}>{day}</Text></View></View>)}{Array.from({length: monthStart.getDay()}, (_, i) => <View key={`blank-${i}`} style={s.dayCell} />)}{monthDates.map(date => {const a = state.attendance.find(a => a.date === date), work = isWorkday(state, date), hol = getHoliday(date); return <View key={date} style={s.dayCell}><AnimatedPressable accessibilityRole="button" accessibilityLabel={`${shortDate(date)}, ${hol ? hol + ', ' : ''}${working ? a?.status ?? (work ? 'jadwal kerja' : 'libur') : ''}`} onPress={() => setSelectedDay(date)} style={[s.day, date === selectedDay ? {backgroundColor: c.ink} : date === today ? {backgroundColor: c.lime} : hol ? {backgroundColor: '#FDF0EE', borderWidth: 1, borderColor: '#F5C2BC'} : working && (!work || a?.status === 'holiday') ? {backgroundColor: '#F4F6F0'} : {}]}><Text style={[s.body, date === selectedDay && {color: c.lime}, hol && date !== selectedDay && {color: '#C93B2B', fontWeight: 'bold'}, working && !work && !hol && date !== selectedDay && {color: c.muted}]}>{Number(date.slice(-2))}</Text><View style={[s.row, {gap: 2}]}>{a && working ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: a.status === 'absent' ? '#D98B66' : c.lime}} /> : hol ? <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#E86555'}} /> : null}{leftoverDates.has(date) && <View style={{width: 4, height: 4, marginTop: 3, borderRadius: 2, backgroundColor: '#6F9A2E'}} />}</View></AnimatedPressable></View>;})}</View><Text style={s.mini}>{working ? '● Hijau: tercatat  ·  ● Merah: tgl merah  ·  ● Oranye: tidak masuk  ·  Abu: libur  ·  ● Hijau tua: ada uang sisa' : '● Merah: tanggal merah  ·  ● Hijau tua: ada uang sisa'}</Text></View>
-    {!working ? <View style={s.section}><SectionHead title={shortDate(selectedDay)} />{selectedHoliday && <Text style={s.body}>Tanggal Merah: {selectedHoliday}</Text>}{activeNeeds.some(n => n.dueDate === selectedDay) ? activeNeeds.filter(n => n.dueDate === selectedDay).map(n => <NeedRow key={n.id} need={n} compact />) : <Text style={s.muted}>Tidak ada kebutuhan yang jatuh tempo di tanggal ini.</Text>}{dailyDay}</View> : <><View style={s.section}><SectionHead title={shortDate(selectedDay)} /><Text style={s.body}>{selectedAttendance?.planned ? 'Rencana kehadiran · belum dikonfirmasi' : selectedAttendance ? selectedAttendance.auto ? 'Masuk kerja · tercatat otomatis' : ({present: 'Sudah masuk kerja', absent: 'Tidak masuk', holiday: 'Libur terjadwal', half: 'Setengah hari'}[selectedAttendance.status]) : selectedHoliday ? `Tanggal Merah: ${selectedHoliday}` : selectedWorkday ? selectedDay > today ? 'Jadwal kerja · otomatis tercatat masuk di harinya' : 'Jadwal kerja · belum dicatat' : 'Hari libur · pemasukan diprediksi Rp0'}</Text><Text style={s.muted}>Pemasukan kerja: {currency(selectedAttendance?.income ?? (selectedWorkday ? state.profile.dailyIncome : 0))}</Text><Button title={selectedAttendance?.auto ? 'Tandai tidak masuk' : selectedAttendance?.planned ? 'Ubah rencana kehadiran' : selectedAttendance ? 'Ubah kehadiran' : 'Catat kehadiran'} onPress={() => open('attendance')} icon="check-circle" />{activeNeeds.filter(n => n.dueDate === selectedDay).map(n => <NeedRow key={n.id} need={n} compact />)}{dailyDay}</View>
+    {!working ? <View style={s.section}><SectionHead title={shortDate(selectedDay)} />{selectedHoliday && <Text style={s.body}>Tanggal Merah: {selectedHoliday}</Text>}{activeNeeds.some(n => n.dueDate === selectedDay) ? activeNeeds.filter(n => n.dueDate === selectedDay).map(n => needRow(n, true)) : <Text style={s.muted}>Tidak ada kebutuhan yang jatuh tempo di tanggal ini.</Text>}{dailyDay}</View> : <><View style={s.section}><SectionHead title={shortDate(selectedDay)} /><Text style={s.body}>{selectedAttendance?.planned ? 'Rencana kehadiran · belum dikonfirmasi' : selectedAttendance ? selectedAttendance.auto ? 'Masuk kerja · tercatat otomatis' : ({present: 'Sudah masuk kerja', absent: 'Tidak masuk', holiday: 'Libur terjadwal', half: 'Setengah hari'}[selectedAttendance.status]) : selectedHoliday ? `Tanggal Merah: ${selectedHoliday}` : selectedWorkday ? selectedDay > today ? 'Jadwal kerja · otomatis tercatat masuk di harinya' : 'Jadwal kerja · belum dicatat' : 'Hari libur · pemasukan diprediksi Rp0'}</Text><Text style={s.muted}>Pemasukan kerja: {currency(selectedAttendance?.income ?? (selectedWorkday ? state.profile.dailyIncome : 0))}</Text><Button title={selectedAttendance?.auto ? 'Tandai tidak masuk' : selectedAttendance?.planned ? 'Ubah rencana kehadiran' : selectedAttendance ? 'Ubah kehadiran' : 'Catat kehadiran'} onPress={() => open('attendance')} icon="check-circle" />{activeNeeds.filter(n => n.dueDate === selectedDay).map(n => needRow(n, true))}{dailyDay}</View>
     <Notice title="Kalau hari ini nggak masuk?" text={selectedDay < today ? 'Simulasi hanya untuk hari ini dan hari mendatang. Ubah catatan kehadiran untuk memperbaiki realisasi sebelumnya.' : !selectedWorkday ? 'Tanggal ini sudah dihitung sebagai libur. Tidak ada pemasukan kerja yang dikurangi.' : `Prediksi kekurangan menjadi ${currency(absence.shortfall)}${absence.shortfall > projection.shortfall ? `, bertambah ${currency(absence.shortfall - projection.shortfall)}` : ''}. Lihat dampak sebelum mencatat.`} icon="activity" />
     <Button title="Atur hari kerja & pemasukan" secondary onPress={() => open('setup')} icon="sliders" /></>}
   </>;
@@ -1231,9 +1384,18 @@ function DanaSiap() {
   const maxBar = Math.max(1, ...bars.map(d => Math.abs(d.balance)));
   const renderInsights = () => <><View style={s.between}><AnimatedPressable onPress={() => switchTab('home')} accessibilityLabel="Kembali ke beranda" style={s.circle}><Icon name="arrow-left" /></AnimatedPressable><Text style={s.title}>Statistik</Text><AnimatedPressable onPress={() => open('settings')} accessibilityLabel="Pengaturan" style={s.circle}><Icon name="more-horizontal" /></AnimatedPressable></View><SegmentPills style={{justifyContent: 'space-between'}} options={[{key: 7, label: '7 hari'}, {key: 14, label: '14 hari'}, {key: 30, label: '30 hari'}, {key: 90, label: '90 hari'}]} value={period} onChange={setPeriod} /><View style={[s.row, {gap: 12}]}><View style={s.stat}><View style={s.between}><Text style={s.mini}>↗ Pemasukan aktual</Text><Icon name="more-horizontal" size={17} /></View><RollingValue value={currency(incomeTotal)} bg={c.lime} containerStyle={{alignSelf: 'flex-start'}} style={s.number} /><Text style={s.mini}>Total yang sudah dicatat</Text><View style={[s.progress, {marginTop: 13, backgroundColor: '#DBF2A0'}]}><View style={[s.progressFill, {width: `${incomeTotal ? Math.max(0, Math.min(100, (incomeTotal - expenseTotal) / incomeTotal * 100)) : 0}%`, backgroundColor: c.white}]} /></View></View><View style={[s.stat, {backgroundColor: c.ink}]}><View style={s.between}><Text style={[s.mini, {color: '#D0DBC2'}]}>↗ Pengeluaran aktual</Text><Icon name="more-horizontal" size={17} color={c.lime} /></View><RollingValue value={currency(expenseTotal)} bg={c.ink} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {color: c.white}]} /><Svg width="100%" height="58" viewBox="0 0 150 58"><Path d="M10 45 L38 15 L65 37 L98 8 L137 40 L10 45 M38 15 L98 8 L65 37 L137 40 M10 45 L98 8" fill="none" stroke={c.lime} strokeWidth=".8" /></Svg></View></View><View style={s.section}><PanelNotch /><SectionHead title="Arah saldo kamu" /><View style={s.between}><View><Text style={s.mini}>Prediksi saldo akhir</Text><RollingValue value={currency(projection.projectedBalance)} bg={c.white} containerStyle={{alignSelf: 'flex-start'}} style={s.number} /></View><View style={{gap: 5}}><Text style={s.mini}>■ Hijau: tersedia</Text><Text style={s.mini}>■ Gelap: defisit</Text></View></View><View style={{height: 171, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', borderBottomWidth: 1, borderColor: c.line}}>{bars.map(d => <View key={d.date} style={{alignItems: 'center', width: '12%', justifyContent: 'flex-end', height: '100%'}}><View style={{height: Math.max(8, Math.abs(d.balance) / maxBar * 126), width: 21, backgroundColor: d.balance < 0 ? c.ink : c.lime, borderRadius: 3, overflow: 'hidden'}}>{Array.from({length: 8}, (_, i) => <View key={i} style={{position: 'absolute', height: 3, backgroundColor: c.white, width: '100%', bottom: i * 18}} />)}</View><Text style={[s.mini, {fontSize: 9, marginTop: 10, marginBottom: 8}]}>{shortDate(d.date)}</Text></View>)}</View><Text style={s.muted}>Perkiraan {period} hari, mengikuti {working ? 'jadwal kerja, ' : ''}kebutuhan, dan anggaran harianmu. Bukan pemasukan yang sudah diterima.</Text></View>
     {projection.risks.map((r, i) => <Notice key={`${r.needId}-${i}`} title={`${r.title} · ${shortDate(r.date)}`} text={`Diprediksi kurang ${currency(r.shortfall)}. ${working ? 'Tinjau pengeluaran dan hari kerja yang tersisa.' : 'Tinjau pengeluaran atau catat uang masuk.'}`} icon="alert-circle" />)}
-    <View style={s.section}><SectionHead title="Semua transaksi" />{transactions.length ? transactions.map(t => <View key={t.id} style={[s.between, {paddingVertical: 7, gap: 15}]}><View style={{flex: 1}}><Text style={s.listTitle}>{t.title}</Text><Text style={s.mini}>{shortDate(t.date)} · {t.category}</Text></View><Text style={s.amount}>{t.type === 'income' ? '+' : '−'}{currency(t.amount)}</Text></View>) : <Empty text="Belum ada transaksi yang dicatat." />}</View>
+    <View style={s.section}><SectionHead title="Semua transaksi" />
+      <GapCollapse gap={13} visible={transactions.length >= 5 || Boolean(txQuery)}><SearchField value={txQuery} onChange={setTxQuery} placeholder="Cari transaksi…" /></GapCollapse>
+      {transactions.length ? <View style={{marginTop: -13}}>{transactions.map(t => <Collapse key={t.id} visible={matches(txQuery, t.title, t.category)}><View style={[s.between, {paddingTop: 13 + 7, paddingBottom: 7, gap: 15}]}><View style={{flex: 1, gap: 3}}><Marquee style={s.listTitle}>{t.title}</Marquee><Text style={s.mini}>{shortDate(t.date)} · {t.category}</Text></View><Text style={s.amount}>{t.type === 'income' ? '+' : '−'}{currency(t.amount)}</Text></View></Collapse>)}</View> : <Empty text="Belum ada transaksi yang dicatat." />}
+      <GapCollapse gap={13} visible={Boolean(txQuery.trim()) && transactions.length > 0 && !transactions.some(t => matches(txQuery, t.title, t.category))}><NoMatch query={txQuery} /></GapCollapse>
+    </View>
   </>;
 
+  // An item form open inside a sheet (shopping item, daily item): the header button goes back to the list.
+  const subForm = (sheet === 'shopping' && shopMode === 'item' && Boolean(shopForm)) || (sheet === 'setup' && Boolean(dailyForm));
+  const sheetTitle = sheet === 'shopping' ? (shopMode === 'buy' ? 'Lagi belanja' : shopMode === 'item' ? (shopForm?.isNew ? 'Tambah barang' : 'Ubah barang') : 'Belanja bulanan')
+    : sheet === 'setup' ? (dailyForm ? (dailyForm.isNew ? 'Tambah pengeluaran harian' : 'Ubah pengeluaran harian') : started ? 'Profil & pengaturan' : 'Kenalan dulu, yuk.')
+    : ({expense: 'Catat pengeluaran', income: 'Catat pemasukan', need: 'Bikin rencana baru', attendance: 'Kehadiran kerja', settings: 'Ruang pribadi', cloud: 'Sinkron perangkat', backup: 'Pulihkan cadangan', daily: 'Ada uang sisa?', leftover: 'Uang Sisa', check: 'Cek sebelum beli', token: 'Token listrik', gas: 'Gas elpiji', skip: 'Libur panjang'} as Record<string, string>)[sheet ?? 'expense'];
   const navBottom = Math.max(insets.bottom, 16);
   const toastHost = editingNeed ? 'need' : sheet !== null ? 'sheet' : 'main';
   const modalToastBottom = keyboardHeight > 0 ? keyboardHeight + 12 : navBottom + 8;
@@ -1243,7 +1405,7 @@ function DanaSiap() {
     <FlyLayer />
     <DialogHost />
     <Toast toast={toastHost === 'main' ? toast : null} bottom={started ? navBottom + 60 + 12 : navBottom + 12} onClose={closeToast} />
-    <SheetModal visible={sheet !== null} onRequestClose={() => closeSheet()} onBackdropPress={() => closeSheet()} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'sheet' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={[s.between, {marginBottom: 13}]}><CrossBlur k={sheet ?? ''} mode="left" style={{flex: 1}}><Text style={s.title}>{{expense: 'Catat pengeluaran', income: 'Catat pemasukan', need: 'Bikin rencana baru', attendance: 'Kehadiran kerja', settings: 'Ruang pribadi', setup: 'Kenalan dulu, yuk.', cloud: 'Sinkron perangkat', backup: 'Pulihkan cadangan', daily: 'Ada uang sisa?', leftover: 'Uang Sisa', check: 'Cek sebelum beli', shopping: shopMode === 'buy' ? 'Lagi belanja' : 'Belanja bulanan', token: 'Token listrik', gas: 'Gas elpiji', skip: 'Libur panjang'}[sheet ?? 'expense']}</Text></CrossBlur><AnimatedPressable accessibilityLabel="Tutup" onPress={() => closeSheet(true)} style={s.circle}><Icon name="x" /></AnimatedPressable></View><ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><CrossBlur k={`${sheet === 'income' ? 'expense' : sheet}:${shopMode}`} parentVeil>
+    <SheetModal visible={sheet !== null} onRequestClose={() => backSheet()} onBackdropPress={() => closeSheet()} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'sheet' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={[s.between, {marginBottom: 13, gap: 12}]}><CrossBlur k={sheetTitle} mode="left" style={{flex: 1}}><Marquee style={s.title}>{sheetTitle}</Marquee></CrossBlur><AnimatedPressable accessibilityLabel={subForm ? 'Kembali ke daftar' : 'Tutup'} onPress={() => subForm ? backSheet(true) : closeSheet(true)} style={s.circle}><CrossBlur k={subForm ? 'back' : 'close'}><Icon name={subForm ? 'arrow-left' : 'x'} /></CrossBlur></AnimatedPressable></View><ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><CrossBlur animateHeight k={`${sheet === 'income' ? 'expense' : sheet}:${sheet === 'shopping' ? shopMode : subForm ? 'item' : ''}`} parentVeil>
       {(sheet === 'expense' || sheet === 'income' || sheet === 'need') && <>
         {sheet !== 'need' && <SegmentPills style={{gap: 8}} options={[{key: 'expense', label: 'Uang keluar'}, {key: 'income', label: 'Uang masuk'}] as const} value={sheet === 'income' ? 'income' : 'expense'} onChange={setSheet} />}
         <Collapse visible={sheet === 'income' && working}><Text style={[s.muted, {marginTop: 10}]}>{state.profile.payrollCycle === 'monthly' ? "Pemasukan kerja dicatat dari absensi. Jika mencatat gaji yang sudah cair, sertakan kata ‘gaji’ di namanya agar prediksi tidak menghitung dua kali." : 'Pemasukan kerja dicatat otomatis dari absensi. Gunakan ini untuk pemasukan lain.'}</Text></Collapse>
@@ -1252,17 +1414,17 @@ function DanaSiap() {
         <Field label={sheet === 'need' ? 'TANGGAL DIBUTUHKAN (YYYY-MM-DD)' : 'TANGGAL (YYYY-MM-DD)'} value={form.date} onChange={date => setForm({...form, date})} />
         {sheet !== 'need' && <SegmentPills style={{marginTop: 7, marginBottom: 3}} options={[{key: today, label: 'Hari ini'}, {key: addDays(today, -1), label: 'Kemarin'}, {key: addDays(today, -2), label: '2 hari lalu'}]} value={form.date} onChange={date => setForm({...form, date})} />}
         <Collapse visible={sheet === 'expense'}><Text style={[s.fieldLabel, {marginTop: 17, marginBottom: 10}]}>KATEGORI</Text><SegmentPills wrap options={['Makan', 'Transportasi', 'Belanja', 'Mendadak', 'Lainnya'].map(key => ({key, label: key}))} value={form.category} onChange={category => setForm({...form, category})} /></Collapse>
-        {sheet === 'need' && <><Text style={[s.fieldLabel, {marginTop: 17, marginBottom: 10}]}>JENIS KEBUTUHAN</Text><SegmentPills options={[{key: 'recurring', label: 'Rutin'}, {key: 'debt', label: 'Utang'}, {key: 'goal', label: 'Tujuan'}]} value={form.kind} onChange={kind => setForm({...form, kind})} /><Collapse visible={Boolean(form.kind === 'recurring')}>{<Field label="BERULANG SETIAP (HARI KALENDER)" value={form.interval} onChange={interval => setForm({...form, interval})} numeric />}</Collapse><Field label="SUDAH DIALOKASIKAN DARI SALDO (RP)" value={form.saved} onChange={saved => setForm({...form, saved})} numeric /><Text style={[s.muted, {marginTop: 5}]}>Alokasi ini bagian dari saldo yang ada, bukan pemasukan tambahan.</Text><SegmentPills style={{marginTop: 15}} options={[{key: 'essential', label: 'Wajib'}, {key: 'flexible', label: 'Fleksibel'}]} value={form.priority} onChange={priority => setForm({...form, priority})} /></>}
+        {sheet === 'need' && <><Text style={[s.fieldLabel, {marginTop: 17, marginBottom: 10}]}>JENIS KEBUTUHAN</Text><SegmentPills options={[{key: 'recurring', label: 'Rutin'}, {key: 'debt', label: 'Utang'}, {key: 'goal', label: 'Tujuan'}]} value={form.kind} onChange={kind => setForm({...form, kind})} /><Collapse visible={Boolean(form.kind === 'recurring')}>{<Field label="BERULANG SETIAP (HARI KALENDER)" value={form.interval} onChange={interval => setForm({...form, interval})} numeric />}</Collapse><Field label="SUDAH DIALOKASIKAN DARI SALDO (RP)" value={form.saved} onChange={saved => setForm({...form, saved})} numeric /><Text style={[s.muted, {marginTop: 5}]}>Alokasi ini bagian dari saldo yang ada, bukan pemasukan tambahan.</Text><SegmentPills style={{marginTop: 15}} options={[{key: 'essential', label: 'Penting'}, {key: 'flexible', label: 'Fleksibel'}]} value={form.priority} onChange={priority => setForm({...form, priority})} /></>}
         <Collapse visible={sheet === 'expense'}>{(() => {const plan = leftoverPlan(number(form.amount || '0')); return <>
           {plan.available && <View style={[s.row, {marginTop: 15, flexWrap: 'wrap'}]}><Chip label={`${plan.on ? '✓ ' : ''}Ambil dari Uang Sisa (${currency(Math.max(0, budget.leftoverPot))})`} active={plan.on} onPress={() => setUseLeftover(!plan.on)} /></View>}
           {plan.on && plan.from > 0 && <Text style={[s.muted, {marginTop: 6}]}>{currency(plan.from)} diambil dari Uang Sisa, sisanya dari jatah.</Text>}
-          {plan.hint ? <Text style={[s.muted, {marginTop: 6}, (plan.hint.startsWith('Uang wajib') || plan.hint.startsWith('Uangnya belum')) && {color: c.red}]}>{plan.hint}</Text> : null}
+          {plan.hint ? <Text style={[s.muted, {marginTop: 6}, (plan.hint.startsWith('Uang untuk tagihan') || plan.hint.startsWith('Uangnya belum')) && {color: c.red}]}>{plan.hint}</Text> : null}
         </>;})()}</Collapse>
-        <Collapse visible={sheet === 'income' && budget.daysLeft <= 3}><View style={[s.row, {marginTop: 15, flexWrap: 'wrap'}]}><Chip label={`${(forNextPeriod ?? true) ? '✓ ' : ''}Untuk periode baru (mulai ${shortDate(addDays(budget.end, 1))})`} active={forNextPeriod ?? true} onPress={() => setForNextPeriod(!(forNextPeriod ?? true))} /></View></Collapse>
+        <Collapse visible={sheet === 'income' && budget.daysLeft <= 3}><View style={[s.row, {marginTop: 15, flexWrap: 'wrap'}]}><Chip label={`${(forNextPeriod ?? true) ? '✓ ' : ''}Untuk bulan baru (mulai ${shortDate(addDays(budget.end, 1))})`} active={forNextPeriod ?? true} onPress={() => setForNextPeriod(!(forNextPeriod ?? true))} /></View></Collapse>
         {sheet === 'income' && (forNextPeriod ?? true) && budget.daysLeft <= 3 && <Text style={[s.muted, {marginTop: 6}]}>Uangnya disimpan dulu dan baru dihitung ke jatah jajan mulai {shortDate(addDays(budget.end, 1))}.</Text>}
         {formError && <Text style={s.error}>{formError}</Text>}<View style={{marginTop: 23}}><Button title={sheet === 'need' ? 'Simpan rencana' : 'Simpan transaksi'} onPress={saveForm} icon="check" /></View>
       </>}
-      {sheet === 'setup' && <><Text style={s.muted}>{profile.working ? 'DanaSiap menghitung tabungan hanya di hari kamu kerja. Semua nominal dalam rupiah.' : 'Catat uang masuk dan keluar, DanaSiap bantu jaga kebutuhanmu. Semua nominal dalam rupiah.'}</Text>
+      {sheet === 'setup' && !dailyForm && <><Text style={s.muted}>{profile.working ? 'DanaSiap menghitung tabungan hanya di hari kamu kerja. Semua nominal dalam rupiah.' : 'Catat uang masuk dan keluar, DanaSiap bantu jaga kebutuhanmu. Semua nominal dalam rupiah.'}</Text>
         <View style={[s.row, {gap: 13, alignItems: 'center', marginTop: 14, marginBottom: 4}]}>
           <View style={[s.avatar, {width: 48, height: 48, borderRadius: 24, overflow: 'hidden'}]}>
             {profile.avatarUrl ? <Image source={{uri: profile.avatarUrl}} style={{width: 48, height: 48}} /> : <Text style={[s.avatarText, {fontSize: 22}]}>{(profile.name || 'D').slice(0, 1).toUpperCase()}</Text>}
@@ -1274,15 +1436,33 @@ function DanaSiap() {
         </View>
         <Field label="NAMA PANGGILAN" value={profile.name} onChange={name => setProfile({...profile, name})} placeholder="Nama kamu" /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>APAKAH KAMU BEKERJA?</Text><SegmentPills style={{gap: 8}} options={[{key: 'yes', label: 'Bekerja'}, {key: 'no', label: 'Tidak bekerja'}] as const} value={profile.working ? 'yes' : 'no'} onChange={v => setProfile({...profile, working: v === 'yes'})} /><Collapse visible={Boolean(!profile.working)}>{<Text style={[s.muted, {marginTop: 6}]}>Absensi, gajian, dan hari kerja disembunyikan. Pemasukan dicatat lewat Uang masuk.</Text>}</Collapse><Field label="SALDO AWAL (RP)" value={profile.openingBalance} onChange={openingBalance => setProfile({...profile, openingBalance})} placeholder="Saldo sebelum transaksi yang dicatat" numeric /><Collapse visible={Boolean(profile.working)}>{<><Field label={profile.payrollCycle === 'monthly' ? "UPAH POKOK / HARI KERJA (RP)" : "PEMASUKAN PER HARI KERJA (RP)"} value={profile.dailyIncome} onChange={dailyIncome => setProfile({...profile, dailyIncome})} placeholder="70000" numeric /><Text style={[s.fieldLabel, {marginTop: 15, marginBottom: 8}]}>SISTEM PENERIMAAN GAJI</Text><SegmentPills style={{gap: 8}} options={[{key: 'daily', label: 'Harian'}, {key: 'monthly', label: 'Bulanan (Payroll)'}] as const} value={profile.payrollCycle} onChange={payrollCycle => setProfile({...profile, payrollCycle})} /><Collapse visible={Boolean(profile.payrollCycle === 'monthly')}>{<Field label="TANGGAL GAJIAN BULANAN (1-28)" value={profile.payday} onChange={payday => setProfile({...profile, payday})} placeholder="5" numeric />}</Collapse><Field label="TUNJANGAN AKTIVITAS (UANG SAKU CASH / HARI AKTIF)" value={profile.activityAllowance} onChange={activityAllowance => setProfile({...profile, activityAllowance})} placeholder="0" numeric /><Text style={[s.muted, {marginTop: 4}]}>Diberikan cash langsung di tangan pada hari aktif. Libur = Rp 0.</Text></>}</Collapse><Field label="SEBULAN MULAI TANGGAL (1-28)" value={profile.periodStartDay} onChange={periodStartDay => setProfile({...profile, periodStartDay})} placeholder="1" numeric /><Text style={[s.muted, {marginTop: 6}]}>Isi tanggal uang bulananmu biasanya masuk (gajian atau transferan). Misal masuk tanggal 25, isi 25: jatah dihitung dari tanggal 25 sampai 24 bulan berikutnya.</Text>{profile.working && profile.payrollCycle === 'monthly' && Number(profile.periodStartDay || '1') !== Number(profile.payday || '5') && <Text style={[s.muted, {marginTop: 4, color: c.red}]}>Tanggal gajianmu {profile.payday || '5'}. Samakan supaya gaji langsung dihitung untuk bulan itu.</Text>}
         <Text style={[s.fieldLabel, {marginTop: 19, marginBottom: 4}]}>PENGELUARAN HARIAN</Text><Text style={s.muted}>Tercatat otomatis tiap hari terjadwal. Tandai kalau nggak dipakai. Contoh: ongkos anak, uang masak. Kebutuhan berkala (ganti oli, kuota, dll.) dicatat di Rencana Kebutuhan.</Text>
-        {dailyDraft.map((item, index) => <View key={item.id} style={[s.section, {marginTop: 12, gap: 0, padding: 14}]}>
-          <View style={s.between}><Text style={s.listTitle}>{item.title.trim() || `Pengeluaran ${index + 1}`}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel={`Hapus ${item.title.trim() || 'pengeluaran harian'}`} onPress={() => setDailyDraft(list => list.filter(d => d.id !== item.id))} style={s.tinyButton}><Text style={s.actionLabel}>Hapus</Text></AnimatedPressable></View>
-          <Field label="NAMA" value={item.title} onChange={title => editDaily(item.id, {title})} placeholder="Misal: Ongkos Anak A" />
-          <Field label="NOMINAL PER HARI (RP)" value={item.amount} onChange={amount => editDaily(item.id, {amount})} placeholder="50.000" numeric />
-          <Text style={[s.fieldLabel, {marginTop: 14, marginBottom: 8}]}>HARI</Text>
-          <View style={[s.row, {flexWrap: 'wrap', gap: 6}]}>{weekdays.map((day, i) => <Chip key={day} label={day} active={item.days.includes(i)} onPress={() => editDaily(item.id, {days: item.days.includes(i) ? item.days.filter(d => d !== i) : [...item.days, i]})} />)}</View>
-          <View style={[s.row, {marginTop: 10}]}><Chip label={item.skipHolidays ? '✓ Libur di tanggal merah' : 'Tetap jalan di tanggal merah'} active={item.skipHolidays} onPress={() => editDaily(item.id, {skipHolidays: !item.skipHolidays})} /></View>
-        </View>)}
-        <View style={{marginTop: 12}}><Button title="Tambah pengeluaran harian" secondary icon="plus" onPress={() => setDailyDraft(list => [...list, {id: uid(), title: '', amount: '', days: [0, 1, 2, 3, 4, 5, 6], skipHolidays: true}])} /></View><Collapse visible={Boolean(profile.working)}>{<><Text style={[s.fieldLabel, {marginTop: 19, marginBottom: 10}]}>BIASANYA KERJA HARI APA?</Text><View style={[s.row, {flexWrap: 'wrap', gap: 6}]}>{weekdays.map((day, i) => <Chip key={day} label={day} active={profile.workDays.includes(i)} onPress={() => setProfile({...profile, workDays: profile.workDays.includes(i) ? profile.workDays.filter(d => d !== i) : [...profile.workDays, i]})} />)}</View><Text style={[s.muted, {marginTop: 10}]}>Tanggal merah mengikuti pilihanmu. Tandai libur tambahan lewat kalender.</Text></>}</Collapse>{formError && <Text style={s.error}>{formError}</Text>}<View style={{marginTop: 23}}><Button title={started ? 'Simpan pengaturan' : 'Siap, mulai rencanakan'} onPress={saveProfile} icon="arrow-up-right" /></View></>}
+        <View style={[s.section, {marginTop: 12, gap: 0, paddingVertical: 6}]}>
+          {dailyDraft.length ? dailyDraft.map((item, i) => <AnimatedPressable key={item.id} accessibilityLabel={`Ubah ${item.title.trim() || 'pengeluaran harian'}`} onPress={() => openDailyItem(item)} style={[s.row, {gap: 11, paddingVertical: 10}, i > 0 && {borderTopWidth: 1, borderColor: '#EEF1E9'}]}>
+            <View style={s.needIcon}><Icon name="repeat" size={16} /></View>
+            <View style={{flex: 1, gap: 3}}><Marquee style={s.listTitle}>{item.title.trim() || 'Tanpa nama'}</Marquee><Marquee style={s.mini}>{`${daysText(item.days)}${item.skipHolidays ? ' · libur di tanggal merah' : ''}`}</Marquee></View>
+            <Text style={[s.body, {fontFamily: 'BarlowMedium', fontSize: 15}]}>{currency(number(item.amount || '0'))}</Text>
+            <Icon name="chevron-right" size={16} color={c.muted} />
+          </AnimatedPressable>) : <Text style={[s.muted, {paddingVertical: 10}]}>Belum ada. Contoh: ongkos anak, uang masak.</Text>}
+        </View>
+        <View style={{marginTop: 12}}><Button title="Tambah pengeluaran harian" secondary icon="plus" onPress={() => openDailyItem()} /></View><Collapse visible={Boolean(profile.working)}>{<><Text style={[s.fieldLabel, {marginTop: 19, marginBottom: 10}]}>BIASANYA KERJA HARI APA?</Text><View style={[s.row, {flexWrap: 'wrap', gap: 6}]}>{weekdays.map((day, i) => <Chip key={day} label={day} active={profile.workDays.includes(i)} onPress={() => setProfile({...profile, workDays: profile.workDays.includes(i) ? profile.workDays.filter(d => d !== i) : [...profile.workDays, i]})} />)}</View><Text style={[s.muted, {marginTop: 10}]}>Tanggal merah mengikuti pilihanmu. Tandai libur tambahan lewat kalender.</Text></>}</Collapse>{formError && <Text style={s.error}>{formError}</Text>}<View style={{marginTop: 23}}><Button title={started ? 'Simpan pengaturan' : 'Siap, mulai rencanakan'} onPress={saveProfile} icon="arrow-up-right" /></View></>}
+      {sheet === 'setup' && dailyForm && (() => {
+        const f = dailyForm;
+        const exists = dailyDraft.some(d => d.id === f.id);
+        return <>
+          <Text style={s.muted}>Tercatat otomatis sebagai pengeluaran di hari yang dipilih. Kalau suatu hari nggak dipakai, tandai di Beranda.</Text>
+          <Field label="NAMA" value={f.title} onChange={title => editDailyForm({title})} placeholder="Misal: Ongkos Anak A" />
+          <Field label="NOMINAL PER HARI (RP)" value={f.amount} onChange={amount => editDailyForm({amount})} placeholder="50.000" numeric />
+          <Text style={[s.fieldLabel, {marginTop: 16, marginBottom: 8}]}>HARI</Text>
+          <View style={[s.row, {flexWrap: 'wrap', gap: 6}]}>{weekdays.map((day, i) => <Chip key={day} label={day} active={f.days.includes(i)} onPress={() => editDailyForm({days: f.days.includes(i) ? f.days.filter(d => d !== i) : [...f.days, i]})} />)}</View>
+          <View style={[s.row, {marginTop: 10}]}><Chip label={f.skipHolidays ? '✓ Libur di tanggal merah' : 'Tetap jalan di tanggal merah'} active={f.skipHolidays} onPress={() => editDailyForm({skipHolidays: !f.skipHolidays})} /></View>
+          {formError && <Text style={s.error}>{formError}</Text>}
+          <View style={{gap: 6, marginTop: 23}}>
+            <Button title="Simpan" icon="check" onPress={() => saveDailyForm('list')} />
+            {exists ? <AnimatedPressable accessibilityRole="button" accessibilityLabel="Hapus pengeluaran harian ini" onPress={deleteDailyItem} style={[s.row, {gap: 7, alignSelf: 'center', padding: 12}]}><Icon name="trash-2" size={15} color={c.red} /><Text style={[s.actionLabel, {color: c.red}]}>Hapus pengeluaran</Text></AnimatedPressable>
+              : <AnimatedPressable accessibilityRole="button" onPress={() => leaveDailyForm('list')} style={{alignSelf: 'center', padding: 12}}><Text style={s.actionLabel}>Batal</Text></AnimatedPressable>}
+          </View>
+        </>;
+      })()}
       {sheet === 'daily' && (() => {
         const item = (state.dailyItems ?? []).find(i => i.id === leftoverTarget?.itemId);
         if (!item || !leftoverTarget) return <Text style={s.muted}>Pengeluaran harian tidak ditemukan.</Text>;
@@ -1298,16 +1478,16 @@ function DanaSiap() {
       })()}
       {sheet === 'leftover' && <View style={{gap: 12}}>
         <RollingValue value={currency(heldPot ?? Math.max(0, budget.leftoverPot))} bg={c.pale} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {fontSize: 34}]} />
-        <Text style={s.muted}>Uang rencana yang nggak terpakai periode {shortDate(budget.start)} – {shortDate(budget.end)}. Uangnya tetap di tanganmu, dipisah dari jatah jajan.</Text>
+        <Text style={s.muted}>Uang yang nggak jadi dipakai dari {shortDate(budget.start)} – {shortDate(budget.end)}, misal ongkos saat anak libur. Uangnya tetap di tanganmu, dipisah dari jatah jajan.</Text>
         <Button title="Pakai Uang Sisa" icon="arrow-up-right" disabled={budget.leftoverPot <= 0} onPress={() => {open('expense'); setUseLeftover(true);}} />
         <View style={s.section}>
-          <SectionHead title="Periode ini" />
-          {budget.leftovers.length ? budget.leftovers.map(l => <Appear key={l.id} style={[s.between, {gap: 12}]}><View style={{flex: 1, gap: 3}}><Text style={s.listTitle}>{l.title}</Text><Text style={s.mini}>{shortDate(l.date)}</Text></View><Text style={s.amount}>+{currency(l.amount)}</Text></Appear>) : <Text style={s.muted}>Belum ada uang sisa periode ini.</Text>}
+          <SectionHead title="Bulan ini" />
+          {budget.leftovers.length ? budget.leftovers.map(l => <Appear key={l.id} style={[s.between, {gap: 12}]}><View style={{flex: 1, gap: 3}}><Marquee style={s.listTitle}>{l.title}</Marquee><Text style={s.mini}>{shortDate(l.date)}</Text></View><Text style={s.amount}>+{currency(l.amount)}</Text></Appear>) : <Text style={s.muted}>Belum ada uang sisa bulan ini.</Text>}
           {budget.leftoverUsed > 0 && <><View style={s.divider} /><View style={s.between}><Text style={s.listTitle}>Sudah dipakai</Text><Text style={s.amount}>−{currency(budget.leftoverUsed)}</Text></View></>}
         </View>
         <View style={s.section}>
-          <SectionHead title="Periode sebelumnya" />
-          {history.length ? history.map(h => <View key={h.start} style={{gap: 3}}><View style={[s.between, {gap: 12}]}><Text style={[s.listTitle, {flex: 1}]}>Sisa {shortDate(h.start)} – {shortDate(h.end)}</Text><Text style={s.amount}>{currency(h.leftover)}</Text></View><Text style={s.mini}>Uang saat periode ditutup {currency(h.endingMoney)}</Text></View>) : <Text style={s.muted}>Riwayat muncul setelah periode pertama selesai.</Text>}
+          <SectionHead title="Bulan-bulan sebelumnya" />
+          {history.length ? history.map(h => <View key={h.start} style={{gap: 3}}><View style={[s.between, {gap: 12}]}><Text style={[s.listTitle, {flex: 1}]}>Sisa {shortDate(h.start)} – {shortDate(h.end)}</Text><Text style={s.amount}>{currency(h.leftover)}</Text></View><Text style={s.mini}>Uang di akhir bulan itu {currency(h.endingMoney)}</Text></View>) : <Text style={s.muted}>Riwayat muncul setelah bulan pertama selesai.</Text>}
         </View>
       </View>}
       {sheet === 'check' && (() => {
@@ -1316,7 +1496,7 @@ function DanaSiap() {
         const notice = !result ? null : result.verdict === 'jatah' ? {title: 'Aman', text: 'Aman, masih masuk jatah hari ini.', icon: 'check-circle' as IconName}
           : result.verdict === 'sisa' ? {title: 'Aman pakai Uang Sisa', text: `Aman: ${result.fromAllowance > 0 ? `${currency(result.fromAllowance)} dari jatah hari ini + ` : ''}${currency(result.fromLeftover)} dari Uang Sisa (Uang Sisa tinggal ${currency(result.leftoverAfter)}).`, icon: 'archive' as IconName}
           : result.verdict === 'turun' ? {title: 'Bisa, tapi hati-hati', text: `Bisa, tapi jatah jajan turun jadi ${currency(result.perDayAfter)}/hari sampai ${shortDate(budget.end)}.`, icon: 'trending-down' as IconName}
-          : {title: 'Jangan dulu', text: result.cashShort > 0 ? `Jangan dulu, uangnya belum ada. Yang bisa dipakai sekarang ${currency(result.cashNow)}.` : `Jangan dulu, uang wajib jadi kurang ${currency(result.shortfall)}.`, icon: 'alert-octagon' as IconName};
+          : {title: 'Jangan dulu', text: result.cashShort > 0 ? `Jangan dulu, uangnya belum ada. Yang bisa dipakai sekarang ${currency(result.cashNow)}.` : `Jangan dulu, uang untuk tagihan jadi kurang ${currency(result.shortfall)}.`, icon: 'alert-octagon' as IconName};
         return <>
           <Text style={s.muted}>Jatah jajan hari ini {currency(Math.max(0, budget.leftToday))}{budget.leftoverPot > 0 ? ` · Uang Sisa ${currency(budget.leftoverPot)}` : ''}.</Text>
           <Field label="HARGA BARANG (RP)" value={checkAmount} onChange={setCheckAmount} placeholder="50.000" numeric />
@@ -1324,33 +1504,84 @@ function DanaSiap() {
           {result && result.verdict !== 'bahaya' && <Appear style={{marginTop: 16}}><Button title="Jadi beli, catat pengeluaran" icon="arrow-up-right" onPress={() => {const value = checkAmount; open('expense'); setForm(f => ({...f, amount: value}));}} /></Appear>}
         </>;
       })()}
-      {sheet === 'shopping' && shopMode === 'edit' && <>
-        <Text style={s.muted}>Daftar belanja rutin tiap periode. Totalnya otomatis jadi kebutuhan wajib "Belanja bulanan". Tandai "Masih ada" kalau stoknya belum habis.</Text>
-        {shopDraft.map((item, index) => <View key={item.id} style={[s.section, {marginTop: 12, gap: 0, padding: 14}, item.skip && {opacity: .75}]}>
-          <View style={[s.between, {gap: 10}]}><Text style={[s.listTitle, {flex: 1}]}>{item.name.trim() || `Barang ${index + 1}`}</Text><Text style={s.mini}>{item.skip ? 'Skip periode ini' : currency(shopLine(item))}</Text></View>
-          <Field label="NAMA BARANG" value={item.name} onChange={name => editShop(item.id, {name})} placeholder="Misal: Beras 5 kg" />
-          <View style={[s.row, {gap: 10, alignItems: 'flex-start'}]}><View style={{flex: 1}}><Field label="JUMLAH" value={item.qty} onChange={qty => editShop(item.id, {qty})} placeholder="1" decimal /></View><View style={{flex: 2}}><Field label="HARGA SATUAN (RP)" value={item.price} onChange={price => editShop(item.id, {price})} numeric /></View></View>
-          <View style={[s.row, {gap: 10, marginTop: 12, alignItems: 'center'}]}><AnimatedPressable accessibilityRole="button" accessibilityLabel={item.image ? `Ganti foto ${item.name || 'barang'}` : `Tambah foto ${item.name || 'barang'}`} onPress={() => chooseShopImage(item.id)} style={{width: 56, height: 56, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderStyle: item.image ? 'solid' : 'dashed', borderColor: '#C9D5B4', backgroundColor: '#F6F9EF', alignItems: 'center', justifyContent: 'center'}}>{item.image ? <Image source={{uri: item.image}} style={{width: 56, height: 56}} /> : <Icon name="camera" size={20} color={c.muted} />}</AnimatedPressable><Text style={[s.mini, {flex: 1}]}>{item.image ? 'Ketuk foto untuk ganti' : 'Tambah foto biar gampang dicari di toko'}</Text>{item.image && <TinyButton label="Hapus foto" onPress={() => editShop(item.id, {image: undefined})} />}</View>
-          <View style={[s.row, {gap: 7, marginTop: 10, flexWrap: 'wrap'}]}><Chip label={item.skip ? '✓ Masih ada' : 'Masih ada'} active={item.skip} onPress={() => editShop(item.id, {skip: !item.skip})} /><TinyButton label="Hapus" onPress={() => setShopDraft(list => list.filter(d => d.id !== item.id))} /></View>
-        </View>)}
-        <View style={{marginTop: 12}}><Button title="Tambah barang" secondary icon="plus" onPress={() => setShopDraft(list => [...list, {id: uid(), name: '', qty: '1', price: '', skip: false, bought: false}])} /></View>
-        <View style={[s.between, {marginTop: 16}]}><Text style={s.listTitle}>Total belanja</Text><RollingValue align="right" bg={c.pale} value={currency(shopDraft.filter(d => !d.skip).reduce((sum, d) => sum + shopLine(d), 0))} style={s.amount} /></View>
-        <Field label="TANGGAL BELANJA (1-28)" value={shopDueDay} onChange={setShopDueDay} placeholder="1" numeric />
-        {state.shopping?.items.length ? <Text style={[s.muted, {marginTop: 6}]}>Jadwal belanja berikutnya {shortDate(shoppingDueDate(state, today))}.</Text> : null}
-        {formError && <Text style={s.error}>{formError}</Text>}
-        <View style={{gap: 10, marginTop: 23}}><Button title="Simpan daftar" icon="check" onPress={() => saveShopping()} /><Button title="Mulai belanja" secondary icon="shopping-cart" onPress={() => saveShopping(true)} /></View>
-      </>}
+      {sheet === 'shopping' && shopMode === 'edit' && (() => {
+        const items = state.shopping?.items ?? [];
+        const anyMatch = items.some(item => matches(shopQuery, item.name));
+        return <>
+          <View style={[s.section, {gap: 10}]}>
+            <View style={[s.between, {alignItems: 'flex-end', gap: 12}]}>
+              <View style={{flex: 1, gap: 2}}>
+                <Text style={s.mini}>{`Total ${items.filter(i => !i.skip).length} barang bulan ini`}</Text>
+                <RollingValue value={currency(shoppingTotal(state.shopping))} bg={c.white} containerStyle={{alignSelf: 'flex-start'}} style={[s.number, {fontSize: 28}]} />
+              </View>
+              {state.shopping?.lastDone ? <Text style={[s.mini, {textAlign: 'right'}]}>{`Terakhir belanja\n${shortDate(state.shopping.lastDone)}`}</Text> : null}
+            </View>
+            <View style={s.divider} />
+            <AnimatedPressable accessibilityRole="button" accessibilityLabel="Atur tanggal belanja" accessibilityState={{expanded: shopDayOpen}} onPress={() => setShopDayOpen(!shopDayOpen)} style={[s.row, {gap: 11}]}>
+              <View style={s.needIcon}><Icon name="calendar" size={16} /></View>
+              <View style={{flex: 1, gap: 3}}><Text style={s.listTitle}>Atur tanggal belanja</Text><Marquee style={s.mini}>{`Tiap tanggal ${shopDueDay}${items.length ? ` · berikutnya ${shortDate(shoppingDueDate(state, today))}` : ''}`}</Marquee></View>
+              <CrossBlur k={shopDayOpen ? 'up' : 'down'}><Icon name={shopDayOpen ? 'chevron-up' : 'chevron-down'} size={17} color={c.muted} /></CrossBlur>
+            </AnimatedPressable>
+            <Collapse visible={shopDayOpen}><View style={{gap: 8, paddingBottom: 4}}>
+              <Text style={s.muted}>Belanja bulanan biasanya tanggal berapa?</Text>
+              <SegmentPills wrap style={{gap: 6}} options={Array.from({length: 28}, (_, i) => ({key: i + 1, label: String(i + 1)}))} value={shopDueDay} onChange={setShopDay} />
+            </View></Collapse>
+            <Button title="Mulai belanja" icon="shopping-cart" disabled={!items.some(i => !i.skip)} onPress={startBuying} />
+          </View>
+          <Collapse visible={items.length >= 5 || Boolean(shopQuery)}><View style={{marginTop: 12}}><SearchField value={shopQuery} onChange={setShopQuery} placeholder="Cari barang…" /></View></Collapse>
+          <View style={[s.section, {marginTop: 12, gap: 0, paddingVertical: 6}]}>
+            {items.length ? items.map(item => <Collapse key={item.id} visible={matches(shopQuery, item.name)}>
+              <AnimatedPressable accessibilityLabel={`Ubah ${item.name}`} onPress={() => openShopItem(item)} style={[s.row, {gap: 10, paddingVertical: 9}]}>
+                <ShopThumb image={item.image} />
+                <View style={{flex: 1, gap: 3}}>
+                  <Marquee style={[s.listTitle, item.skip && {color: c.muted}]}>{item.name}</Marquee>
+                  <CrossBlur k={item.skip ? 'skip' : 'buy'} variant="value"><Marquee style={s.mini}>{item.skip ? 'Stok masih ada · skip bulan ini' : `${String(item.qty).replace('.', ',')} × ${currency(item.price)}`}</Marquee></CrossBlur>
+                </View>
+                <RollingValue value={item.skip ? '–' : currency(Math.round(item.qty * item.price))} align="right" containerStyle={{minWidth: 64, alignItems: 'flex-end'}} style={[s.body, {fontFamily: 'BarlowMedium', fontSize: 15}, item.skip && {color: c.muted}]} />
+                <SkipChip on={Boolean(item.skip)} onPress={() => toggleShopSkip(item.id)} />
+              </AnimatedPressable>
+            </Collapse>) : <Empty text="Belum ada barang. Tambahkan beras, minyak, sabun, dan kebutuhan dapur lainnya." />}
+            <Collapse visible={items.length > 0 && !anyMatch}><NoMatch query={shopQuery} /></Collapse>
+          </View>
+          <View style={{marginTop: 14}}><Button title="Tambah barang" secondary icon="plus" onPress={() => openShopItem()} /></View>
+          <Text style={[s.muted, {marginTop: 12}]}>Ketuk barang untuk ubah jumlah, harga, atau foto. Ketuk "Skip" kalau stoknya masih ada bulan ini. Totalnya otomatis masuk rencana kebutuhan.</Text>
+        </>;
+      })()}
+      {sheet === 'shopping' && shopMode === 'item' && shopForm && (() => {
+        const f = shopForm;
+        const exists = (state.shopping?.items ?? []).some(i => i.id === f.id);
+        return <>
+          <View style={[s.row, {gap: 14}]}>
+            <AnimatedPressable accessibilityRole="button" accessibilityLabel={f.image ? 'Ganti foto barang' : 'Tambah foto barang'} onPress={() => chooseShopImage(f.id)} style={{width: 72, height: 72, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderStyle: f.image ? 'solid' : 'dashed', borderColor: '#C9D5B4', backgroundColor: '#F6F9EF', alignItems: 'center', justifyContent: 'center'}}>
+              {f.image ? <Image source={{uri: f.image}} style={{width: 72, height: 72}} /> : <Icon name="camera" size={22} color={c.muted} />}
+            </AnimatedPressable>
+            <View style={{flex: 1, gap: 8, alignItems: 'flex-start'}}>
+              <Text style={s.mini}>{f.image ? 'Ketuk foto untuk ganti.' : 'Tambah foto biar gampang dicari di toko.'}</Text>
+              {f.image ? <TinyButton label="Hapus foto" danger onPress={() => showDialog('Hapus foto barang?', 'Fotonya dilepas dari barang ini. Barangnya tetap ada di daftar.', [{text: 'Batal', style: 'cancel'}, {text: 'Hapus foto', style: 'destructive', onPress: () => editShopForm({image: undefined})}], {icon: 'image'})} /> : null}
+            </View>
+          </View>
+          <Field label="NAMA BARANG" value={f.name} onChange={name => editShopForm({name})} placeholder="Misal: Beras 5 kg" />
+          <View style={[s.row, {gap: 10, alignItems: 'flex-start'}]}><View style={{flex: 1}}><Field label="JUMLAH" value={f.qty} onChange={qty => editShopForm({qty})} placeholder="1" decimal /></View><View style={{flex: 2}}><Field label="HARGA SATUAN (RP)" value={f.price} onChange={price => editShopForm({price})} numeric /></View></View>
+          <View style={[s.between, {marginTop: 16}]}><Text style={s.listTitle}>Subtotal</Text><RollingValue align="right" bg={c.pale} value={currency(shopLine(f))} style={s.amount} /></View>
+          {formError && <Text style={s.error}>{formError}</Text>}
+          <View style={{gap: 6, marginTop: 23}}>
+            <Button title="Simpan" icon="check" onPress={() => saveShopForm('list')} />
+            {exists ? <AnimatedPressable accessibilityRole="button" accessibilityLabel="Hapus barang ini" onPress={deleteShopItem} style={[s.row, {gap: 7, alignSelf: 'center', padding: 12}]}><Icon name="trash-2" size={15} color={c.red} /><Text style={[s.actionLabel, {color: c.red}]}>Hapus barang</Text></AnimatedPressable>
+              : <AnimatedPressable accessibilityRole="button" onPress={() => leaveShopForm('list')} style={{alignSelf: 'center', padding: 12}}><Text style={s.actionLabel}>Batal</Text></AnimatedPressable>}
+          </View>
+        </>;
+      })()}
       {sheet === 'shopping' && shopMode === 'buy' && (() => {
         const active = state.needs.find(n => isShoppingNeed(n) && !n.paid);
         const planned = active ? remainingAmount(active) : shoppingTotal(state.shopping);
         const inCart = shopDraft.filter(d => !d.skip && d.bought).reduce((sum, d) => sum + shopLine(d), 0);
         return <>
-          <Text style={s.muted}>Centang barang yang sudah masuk keranjang. Ubah harga atau jumlah kalau beda dari rencana, harga baru dipakai untuk periode depan.</Text>
+          <Text style={s.muted}>Centang barang yang sudah masuk keranjang. Ubah harga atau jumlah kalau beda dari rencana, harga baru dipakai untuk bulan depan.</Text>
           {shopDraft.filter(d => !d.skip).map(item => <View key={item.id} style={[s.section, {marginTop: 12, gap: 0, padding: 14}]}>
-            <AnimatedPressable accessibilityRole="checkbox" accessibilityLabel={item.name} accessibilityState={{checked: item.bought}} onPress={() => editShop(item.id, {bought: !item.bought})} style={[s.row, {gap: 10}]}><PopIn trigger={item.bought}><Icon name={item.bought ? 'check-square' : 'square'} size={20} /></PopIn>{item.image && <Image source={{uri: item.image}} style={{width: 40, height: 40, borderRadius: 10}} />}<Text style={[s.listTitle, {flex: 1}, item.bought && {textDecorationLine: 'line-through', color: c.muted}]}>{item.name}</Text><Text style={[s.amount, !item.bought && {color: c.muted}]}>{currency(shopLine(item))}</Text></AnimatedPressable>
+            <AnimatedPressable accessibilityRole="checkbox" accessibilityLabel={item.name} accessibilityState={{checked: item.bought}} onPress={() => editShop(item.id, {bought: !item.bought})} style={[s.row, {gap: 10}]}><PopIn trigger={item.bought}><Icon name={item.bought ? 'check-square' : 'square'} size={20} /></PopIn>{item.image && <Image source={{uri: item.image}} style={{width: 40, height: 40, borderRadius: 10}} />}<Marquee containerStyle={{flex: 1}} style={[s.listTitle, item.bought && {textDecorationLine: 'line-through', color: c.muted}]}>{item.name}</Marquee><Text style={[s.amount, !item.bought && {color: c.muted}]}>{currency(shopLine(item))}</Text></AnimatedPressable>
             <View style={[s.row, {gap: 10, alignItems: 'flex-start'}]}><View style={{flex: 1}}><Field label="JUMLAH" value={item.qty} onChange={qty => editShop(item.id, {qty})} placeholder="1" decimal /></View><View style={{flex: 2}}><Field label="HARGA SATUAN (RP)" value={item.price} onChange={price => editShop(item.id, {price})} numeric /></View></View>
           </View>)}
-          {!shopDraft.some(d => !d.skip) && <Empty text="Belum ada barang yang perlu dibeli. Atur daftar dulu." />}
+          {!shopDraft.some(d => !d.skip) && <Empty text="Belum ada barang yang perlu dibeli. Tambah barang di daftar dulu." />}
           <View style={[s.section, {marginTop: 12, gap: 7}]}>
             {line('Rencana', currency(planned))}
             {line('Sudah di keranjang', currency(inCart), true)}
@@ -1607,8 +1838,8 @@ function DanaSiap() {
           {Boolean(state.profile.avatarUrl) && <View style={{flex: 1}}><Button title="Hapus foto" secondary icon="trash-2" onPress={removeAvatar} /></View>}
         </View>
         <Button title={working ? 'Profil, pemasukan & hari kerja' : 'Profil & saldo'} secondary icon="sliders" onPress={() => open('setup')} />
-        <Button title={reminders ? 'Matikan pengingat perangkat' : 'Aktifkan pengingat kebutuhan'} secondary icon="bell" disabled={demo} onPress={async () => {if (reminders) {setReminders(false); persist(state, demo, false); notify('Pengingat perangkat dimatikan.');} else {try {const granted = await enableReminders(); if (granted) {setReminders(true); persist(state, demo, true); notify('Pengingat kebutuhan aktif.');} else notify('Izin notifikasi belum aktif. Aktifkan notifikasi DanaSiap di pengaturan Android.', 'error');} catch {notify('Pengingat belum aktif. Coba lagi setelah membuka pengaturan notifikasi Android.', 'error');}}}} />
-        <Text style={s.muted}>{demo ? 'Pengingat dinonaktifkan pada data contoh.' : 'Pengingat untuk 20 kebutuhan aktif. Buka aplikasi berkala agar jadwal diperbarui.'}</Text>
+        <Button title={reminders ? 'Matikan pengingat perangkat' : 'Aktifkan pengingat'} secondary icon="bell" disabled={demo} onPress={async () => {if (reminders) {setReminders(false); persist(state, demo, false); notify('Pengingat perangkat dimatikan.');} else {try {const granted = await enableReminders(); if (granted) {setReminders(true); persist(state, demo, true); notify('Pengingat aktif.');} else notify('Izin notifikasi belum aktif. Aktifkan notifikasi DanaSiap di pengaturan Android.', 'error');} catch {notify('Pengingat belum aktif. Coba lagi setelah membuka pengaturan notifikasi Android.', 'error');}}}} />
+        <Text style={s.muted}>{demo ? 'Pengingat dinonaktifkan pada data contoh.' : 'Pengingat kebutuhan (token, gas, belanja, tagihan), jatah jajan tiap pagi, cek uang sisa tiap sore, awal bulan, dan peringatan kalau uang untuk tagihan & kebutuhan kurang. Buka aplikasi berkala agar jadwal diperbarui.'}</Text>
         <Button title="Akun & sinkron web" secondary icon="cloud" onPress={() => open('cloud')} />
         <Button title="Salin cadangan ke clipboard" secondary icon="copy" onPress={copyBackupToClipboard} />
         <Button title="Bagikan cadangan JSON" secondary icon="share-2" onPress={shareBackupJson} />
@@ -1744,7 +1975,7 @@ function DanaSiap() {
             <Button title="Unggah data perangkat" disabled={busy || demo} icon="upload-cloud" onPress={() => runCloud(upload)} />
             <Button title="Ambil data dari cloud" disabled={busy} icon="download-cloud" secondary onPress={() => runCloud(download)} />
             <View style={{height: 1, backgroundColor: '#E3E9DA', marginVertical: 8}} />
-            <Button title="Keluar dari akun" disabled={busy} secondary icon="log-out" onPress={() => runCloud(async () => { await cloud!.signOut(); setCloudUser(''); notify('Kamu sudah keluar dari akun. Data di perangkat tetap aman.'); })} />
+            <Button title="Keluar dari akun" disabled={busy} secondary icon="log-out" onPress={() => showDialog('Keluar dari akun?', 'Data di perangkat ini tetap ada. Sinkron ke web berhenti sampai kamu masuk lagi.', [{text: 'Batal', style: 'cancel'}, {text: 'Keluar', style: 'destructive', onPress: () => runCloud(async () => { await cloud!.signOut(); setCloudUser(''); notify('Kamu sudah keluar dari akun. Data di perangkat tetap aman.'); })}], {icon: 'log-out'})} />
           </View>
         ) : (
           <View style={{gap: 0, marginTop: 8}}>
@@ -1767,6 +1998,6 @@ function DanaSiap() {
         {cloudMessage && <Text style={[s.muted, {marginTop: 15, textAlign: 'center'}]}>{cloudMessage}</Text>}
       </>}
     </CrossBlur></ScrollView></SheetModal>
-    <SheetModal visible={editingNeed !== null} onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} onBackdropPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'need' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={s.between}><Text style={s.title}>{editingNeed?.title}</Text><AnimatedPressable accessibilityLabel="Tutup detail kebutuhan" onPress={() => setEditingNeed(null)} style={s.circle}><Icon name="x" /></AnimatedPressable></View>{editingNeed && <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><Text style={[s.number, {marginTop: 12}]}>{currency(remainingAmount(editingNeed))}</Text><Text style={s.muted}>Jadwal {shortDate(editingNeed.dueDate)} · alokasi {currency(editingNeed.saved)}</Text><Field label="ALOKASI DARI SALDO (RP)" value={allocatedInput} onChange={setAllocatedInput} numeric /><Field label="JADWAL BARU (YYYY-MM-DD)" value={rescheduleDate} onChange={setRescheduleDate} /><View style={[s.row, {gap: 9, marginTop: 11}]}><Chip label="−1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, -1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+3 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 3));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /></View>{formError && <Text style={s.error}>{formError}</Text>}<View style={{gap: 11, marginTop: 22}}><Button title="Simpan & hitung ulang" secondary icon="calendar" onPress={() => {try {const next = reducer(reducer(current.current, {type: 'need/reschedule', id: editingNeed.id, dueDate: rescheduleDate}), {type: 'need/update', id: editingNeed.id, changes: {saved: number(allocatedInput)}}); persist(next); setEditingNeed(null); notify(`Rencana ${editingNeed.title} diperbarui · ${shortDate(rescheduleDate)}, alokasi ${currency(number(allocatedInput))}.`);} catch (error) {setFormError(error instanceof Error ? error.message : 'Periksa alokasi dan tanggal.');}}} /><Button title={isShoppingNeed(editingNeed) ? 'Mulai belanja' : isElectricityNeed(editingNeed) ? 'Catat beli token' : isGasNeed(editingNeed) ? 'Catat beli gas' : editingNeed.kind === 'recurring' ? 'Sudah dipakai / dibayar hari ini' : 'Sudah dibayar hari ini'} icon="check-circle" onPress={() => payNeed(editingNeed)} /></View><Text style={[s.muted, {marginTop: 12}]}>Jika rutin, jadwal berikutnya dimulai dari pembayaran aktual. Saldo dan prediksi langsung diperbarui.</Text></ScrollView>}</SheetModal>
+    <SheetModal visible={editingNeed !== null} onRequestClose={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} onBackdropPress={() => { if (keyboardHeight > 0) Keyboard.dismiss(); else setEditingNeed(null); }} backdropStyle={keyboardHeight > 0 && {paddingBottom: keyboardHeight}} panelStyle={[s.modal, {paddingBottom: keyboardHeight > 0 ? 16 : Math.max(insets.bottom, 22), maxHeight: keyboardHeight > 0 ? Math.max(280, windowHeight - keyboardHeight - (insets.top || 24) - 16) : '91%'}]} overlay={<Toast toast={toastHost === 'need' ? toast : null} bottom={modalToastBottom} onClose={closeToast} />}><View style={[s.between, {gap: 12}]}><Marquee containerStyle={{flex: 1}} style={s.title}>{editingNeed?.title ?? ''}</Marquee><AnimatedPressable accessibilityLabel="Tutup detail kebutuhan" onPress={() => setEditingNeed(null)} style={s.circle}><Icon name="x" /></AnimatedPressable></View>{editingNeed && <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom: 28}}><Text style={[s.number, {marginTop: 12}]}>{currency(remainingAmount(editingNeed))}</Text><Text style={s.muted}>Jadwal {shortDate(editingNeed.dueDate)} · alokasi {currency(editingNeed.saved)}</Text><Field label="ALOKASI DARI SALDO (RP)" value={allocatedInput} onChange={setAllocatedInput} numeric /><Field label="JADWAL BARU (YYYY-MM-DD)" value={rescheduleDate} onChange={setRescheduleDate} /><View style={[s.row, {gap: 9, marginTop: 11}]}><Chip label="−1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, -1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+1 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 1));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /><Chip label="+3 hari" active={false} onPress={() => {try {setRescheduleDate(addDays(rescheduleDate, 3));} catch {setFormError('Gunakan tanggal YYYY-MM-DD.');}}} /></View>{formError && <Text style={s.error}>{formError}</Text>}<View style={{gap: 11, marginTop: 22}}><Button title="Simpan & hitung ulang" secondary icon="calendar" onPress={() => {try {const next = reducer(reducer(current.current, {type: 'need/reschedule', id: editingNeed.id, dueDate: rescheduleDate}), {type: 'need/update', id: editingNeed.id, changes: {saved: number(allocatedInput)}}); persist(next); setEditingNeed(null); notify(`Rencana ${editingNeed.title} diperbarui · ${shortDate(rescheduleDate)}, alokasi ${currency(number(allocatedInput))}.`);} catch (error) {setFormError(error instanceof Error ? error.message : 'Periksa alokasi dan tanggal.');}}} /><Button title={isShoppingNeed(editingNeed) ? 'Mulai belanja' : isElectricityNeed(editingNeed) ? 'Catat beli token' : isGasNeed(editingNeed) ? 'Catat beli gas' : editingNeed.kind === 'recurring' ? 'Sudah dipakai / dibayar hari ini' : 'Sudah dibayar hari ini'} icon="check-circle" onPress={() => payNeed(editingNeed)} /></View><Text style={[s.muted, {marginTop: 12}]}>Jika rutin, jadwal berikutnya dimulai dari pembayaran aktual. Saldo dan prediksi langsung diperbarui.</Text></ScrollView>}</SheetModal>
   </View>;
 }

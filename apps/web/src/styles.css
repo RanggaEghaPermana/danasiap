@@ -453,7 +453,6 @@ a {
   color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .user-dropdown-info small {
   font-size: 10px;
@@ -1060,7 +1059,6 @@ a {
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
-  text-overflow: ellipsis;
   overflow: hidden;
 }
 .transaction-info > span {
@@ -1347,7 +1345,7 @@ a {
 }
 .overview-strip {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   background: #fffefb;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -1491,7 +1489,6 @@ a {
   font-size: 8px;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   max-width: 100%;
   background: #e7f1d1;
   border-radius: 3px;
@@ -1514,7 +1511,6 @@ a {
   font-weight: 500;
   max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .calendar-day.absent {
@@ -2820,7 +2816,7 @@ a {
   }
   .overview-strip .money,
   .overview-strip strong {
-    font-size: 25px;
+    font-size: 21px;
   }
   .overview-strip small {
     font-size: 14px;
@@ -3504,7 +3500,6 @@ a {
   align-items: center;
   gap: 8px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -3652,7 +3647,6 @@ a {
   color: inherit;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .custom-select-option-sublabel {
@@ -3710,12 +3704,12 @@ a {
 }
 .budget-panel .panel-heading {
   align-items: flex-start;
+  flex-wrap: wrap;
+  row-gap: 10px;
 }
 .budget-panel .status-pill {
-  white-space: normal;
-  text-align: right;
   line-height: 1.4;
-  max-width: 200px;
+  max-width: 100%;
 }
 .budget-sub {
   font-size: 11px;
@@ -3781,6 +3775,10 @@ a {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  flex: 1;
+}
+.daily-item-main > .money {
+  flex-shrink: 0;
 }
 .daily-item-info > strong {
   font-size: 13px;
@@ -3795,13 +3793,18 @@ a {
 }
 .daily-item-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   margin-top: 10px;
+  min-width: 0;
+}
+.daily-item-actions > .chip-button {
+  flex: 0 1 auto;
 }
 .chip-button {
   display: inline-flex;
   align-items: center;
+  white-space: nowrap;
   gap: 5px;
   font-size: 11px;
   padding: 7px 11px;
@@ -4061,6 +4064,9 @@ label.pot-toggle {
 }
 .daily-items-field {
   gap: 0;
+  /* A fieldset is as wide as its content by default; let long names scroll instead. */
+  min-width: 0;
+  min-inline-size: 0;
 }
 .daily-item-editor {
   padding: 14px;
@@ -4109,9 +4115,7 @@ label.pot-toggle {
   .budget-panel {
     order: 0;
   }
-  .budget-panel .status-pill {
-    max-width: 150px;
-  }
+
   .daily-items-panel,
   .pot-panel {
     order: 0;
@@ -4707,4 +4711,358 @@ span.m-layer {
 
 .form-warning {
   color: #ad543b;
+}
+
+/* Marquee (motion.tsx): single-line labels scroll instead of truncating with "…".
+   Every instance shares one clock: 0–17% hold, 17–50% glide to the end, 50–67% hold, back. */
+@keyframes marquee {
+  0%,
+  16.667% {
+    translate: 0 0;
+    animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+  }
+  50%,
+  66.667% {
+    translate: calc(-1 * var(--overflow, 0px)) 0;
+    animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+  }
+  100% {
+    translate: 0 0;
+  }
+}
+.marquee {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.marquee-track {
+  display: inline-block;
+  white-space: nowrap;
+}
+/* Soft edges so a moving label fades out instead of being cut mid-letter. */
+.marquee.is-overflowing {
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%);
+}
+.marquee.is-overflowing > .marquee-track {
+  animation: marquee 7200ms linear infinite;
+  will-change: translate;
+}
+/* Inside flex rows (buttons, pills, chips) the label may shrink; the icon never does. */
+:is(.button, .chip-button, .status-pill, .text-button, .segmented button, .filter-tabs button) > .marquee {
+  flex: 0 1 auto;
+}
+:is(.button, .chip-button, .status-pill, .text-button) {
+  min-width: 0;
+  max-width: 100%;
+}
+:is(.button, .chip-button, .text-button) > svg {
+  flex-shrink: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .marquee,
+  .marquee-track {
+    white-space: normal;
+  }
+  .marquee.is-overflowing > .marquee-track {
+    animation: none;
+  }
+}
+
+/* AnimatedList (motion.tsx): leaving rows are taken out of flow where they were. */
+.m-list {
+  position: relative;
+}
+.m-list > .m-list-item {
+  min-width: 0;
+}
+.m-list > .m-list-item > :is(.need-card, .transaction-row) {
+  width: 100%;
+  height: 100%;
+}
+.m-list > .m-list-item:not(:last-child) > .transaction-row {
+  border-bottom: 1px solid #edf0e7;
+}
+.m-list > .m-list-item:last-child > .transaction-row {
+  border-bottom: 0;
+}
+
+/* Search field: magnifier, input, and a fixed slot for the clear button (no reflow). */
+.search-field input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.search-field {
+  background: #fffefb;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.search-field:focus-within {
+  border-color: #b7d972;
+  box-shadow: 0 0 0 3px rgba(200, 237, 105, 0.28);
+}
+.search-field > svg {
+  flex-shrink: 0;
+}
+.search-clear-slot {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+.search-clear {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #eef3e3;
+  color: #5d6a4c;
+}
+.search-clear:hover {
+  background: #e5f7b9;
+}
+.list-search {
+  max-width: none;
+  margin-bottom: 12px;
+}
+.no-match {
+  font-size: 12px;
+  color: #7f8a70;
+  padding: 14px 0;
+  text-align: center;
+}
+
+/* Belanja bulanan: list for looking, one-item form for editing. */
+.back-button {
+  margin: -6px 0 12px;
+  color: #6f7b60;
+}
+.shop-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 16px;
+  border-radius: 14px;
+  background: #f7faf1;
+  border: 1px solid #e9efdc;
+}
+.shop-summary .daily-row {
+  margin-bottom: 0;
+}
+.shop-due-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: #6f7b60;
+}
+.shop-due-row > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.shop-due-row > :last-child {
+  flex: 0 1 170px;
+  min-width: 0;
+}
+.shop-list {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 14px;
+}
+.shop-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  background: #fffefb;
+}
+.m-list-item:last-child > .shop-item {
+  border-bottom: 0;
+}
+.shop-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 2px 4px 2px 0;
+  border-radius: 12px;
+  transition: opacity 0.2s;
+}
+.shop-item-main:hover .shop-item-text strong {
+  color: #5f7d25;
+}
+.shop-thumb {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: #eef4e0;
+  color: #738951;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex: none;
+}
+.shop-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.shop-item-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.shop-item-text strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.shop-item-text small {
+  font-size: 11px;
+  color: #8a937c;
+}
+.shop-item-total {
+  font-family: var(--condensed);
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.shop-item.skipped .shop-item-main {
+  opacity: 0.5;
+}
+.shop-item.skipped .shop-item-total {
+  text-decoration: line-through;
+}
+.skip-chip {
+  flex-shrink: 0;
+}
+.skip-check {
+  opacity: 0;
+  scale: 0.5;
+  transition:
+    opacity 0.2s,
+    scale 0.45s var(--m-spring);
+}
+.skip-chip.selected .skip-check {
+  opacity: 1;
+  scale: 1;
+}
+.shop-add {
+  width: 100%;
+}
+.shop-edit-name {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.shop-edit .item-photo-wrap {
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 88px;
+  width: 64px;
+}
+.shop-edit .item-photo {
+  width: 60px;
+  height: 60px;
+}
+.shop-edit .item-photo-wrap .text-button {
+  padding: 3px 0;
+  font-size: 10px;
+}
+.shop-edit .pot-toggle {
+  margin-bottom: 14px;
+}
+.shop-edit > .daily-row.total {
+  font-size: 12px;
+}
+.shop-delete {
+  display: flex;
+  margin: 14px auto 0;
+  padding: 8px 12px;
+}
+.shopping-row.run .shopping-name {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.shopping-row.run .shopping-name strong {
+  min-width: 0;
+  flex: 1;
+}
+
+/* Pengeluaran harian editor: rows to tap, one-item form. */
+.daily-items-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.daily-items-view > .button {
+  align-self: flex-start;
+}
+.daily-items-view > small {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8a937c;
+  line-height: 1.55;
+}
+.daily-edit-list {
+  margin-bottom: 0;
+}
+button.daily-edit-row {
+  width: 100%;
+  text-align: left;
+}
+button.daily-edit-row:hover .shop-item-text strong {
+  color: #5f7d25;
+}
+.daily-edit-amount {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.daily-edit-amount small {
+  font-size: 10px;
+  color: #8a937c;
+}
+.daily-holiday-check {
+  margin: 12px 0 14px;
+  font-weight: 400;
+}
+.daily-item-editor .back-button {
+  margin: -4px 0 10px;
+}
+/* The panel's bottom margin lives outside the morphing view, so it never collapses in/out. */
+.shopping-scroll-anchor {
+  padding-bottom: 25px;
+}
+.shopping-scroll-anchor .shopping-panel {
+  margin-bottom: 0;
+}
+
+.shop-summary .daily-row.total {
+  border-top: 0;
+  padding-top: 0;
+}
+@media (max-width: 760px) {
+  .shop-item-total {
+    font-size: 18px;
+  }
+}
+/* Grid items with long single-line (marquee) text must be allowed to shrink. */
+.settings-grid > *,
+.dashboard-grid > * {
+  min-width: 0;
 }

@@ -62,6 +62,7 @@ import {
 import { DaySection, DayDetail, PotDetail, PurchaseCheck } from "./budget";
 import {
   MorphSwap,
+  Marquee,
   Presence,
   TabIndicator,
   useMorphMenu,
@@ -599,7 +600,9 @@ export function App() {
                       )}
                     </div>
                     <div className="user-dropdown-info">
-                      <strong>{state.profile.name || "Pengguna"}</strong>
+                      <strong>
+                        <Marquee>{state.profile.name || "Pengguna"}</Marquee>
+                      </strong>
                       <small>
                         {finance.mode === "demo"
                           ? "Mode data contoh"
@@ -748,6 +751,10 @@ export function App() {
                 finance.dispatch({ type: "daily/set", items: dailyItems });
                 notify("Pengaturan tersimpan.");
               }}
+              saveItems={(items) => {
+                finance.dispatch({ type: "daily/set", items: validatedDailyItems(items) });
+                notify("Pengeluaran harian tersimpan.");
+              }}
               session={session}
               cloudReady={Boolean(cloud)}
               syncStatus={syncStatus}
@@ -834,7 +841,7 @@ export function App() {
               : dialog.type === "need" && !dialog.need
                 ? "Siapkan uangnya sebelum hari itu datang."
                 : dialog.type === "check"
-                  ? "Lihat dulu dampaknya ke jatah dan uang wajib."
+                  ? "Lihat dulu dampaknya ke jatah jajan dan tagihan."
                   : undefined
           }
           close={() => setDialog(null)}
@@ -1254,6 +1261,7 @@ function AuthForm({ done }: { done: () => void }) {
 function Settings({
   state,
   save,
+  saveItems,
   session,
   cloudReady,
   syncStatus,
@@ -1266,6 +1274,7 @@ function Settings({
 }: {
   state: AppState;
   save: (p: Profile, items: DailyItemDraft[]) => void;
+  saveItems: (items: DailyItemDraft[]) => void;
   session: Session | null;
   cloudReady: boolean;
   syncStatus: string;
@@ -1315,6 +1324,7 @@ function Settings({
               setProfile={setProfile}
               items={items}
               setItems={setItems}
+              commitItems={saveItems}
             />
             <p className="form-hint">
               Mengubah saldo awal akan menghitung ulang seluruh saldo. Untuk

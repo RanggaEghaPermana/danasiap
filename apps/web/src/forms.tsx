@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ArrowUpRight,
   ArrowLeft,
@@ -41,8 +41,8 @@ import {
   spendingImpact,
 } from "@danasiap/core";
 import { Brand, Money, DateLabel, MoneyInput, CustomSelect, processAvatarFile } from "./components";
-import { alertDialog } from "./dialog";
-import { Collapse, MorphSwap, TabIndicator } from "./motion";
+import { alertDialog, confirmDialog } from "./dialog";
+import { AnimatedList, Collapse, Marquee, MorphSwap, TabIndicator } from "./motion";
 
 export const weekLabels = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
 const id = () => crypto.randomUUID();
@@ -87,103 +87,259 @@ export function validatedDailyItems(items: DailyItemDraft[]): DailyItemDraft[] {
     return { ...item, title };
   });
 }
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
+/** "Sen–Jum", "Setiap hari", or the chosen days in week order. */
+export function dayListText(days: number[]) {
+  const set = new Set(days);
+  if (set.size === 7) return "Setiap hari";
+  if (set.size === 5 && [1, 2, 3, 4, 5].every((d) => set.has(d))) return "Sen–Jum";
+  if (set.size === 6 && [1, 2, 3, 4, 5, 6].every((d) => set.has(d))) return "Sen–Sab";
+  return WEEK_ORDER.filter((d) => set.has(d)).map((d) => weekLabels[d]).join(", ");
+}
+const sameDaily = (a?: DailyItemDraft, b?: DailyItemDraft) =>
+  JSON.stringify(a && [a.title.trim(), a.amount, [...a.days].sort(), a.skipHolidays]) ===
+  JSON.stringify(b && [b.title.trim(), b.amount, [...b.days].sort(), b.skipHolidays]);
+const upsertDaily = (items: DailyItemDraft[], item: DailyItemDraft) =>
+  items.some((i) => i.id === item.id)
+    ? items.map((i) => (i.id === item.id ? item : i))
+    : [...items, item];
+
+/**
+ * Pengeluaran harian: a list to look at; tapping a row opens a small form for that one item
+ * (morph). A complete form is kept in the list as you type, so the page's own save includes
+ * it; `onCommit` (settings) also saves it right away on "Simpan".
+ */
 function DailyItemsEditor({
   items,
   setItems,
+  onCommit,
 }: {
   items: DailyItemDraft[];
   setItems: (items: DailyItemDraft[]) => void;
+  onCommit?: (items: DailyItemDraft[]) => void;
 }) {
-  const update = (itemId: string, changes: Partial<DailyItemDraft>) =>
-    setItems(
-      items.map((item) => (item.id === itemId ? { ...item, ...changes } : item)),
-    );
+  const [editing, setEditing] = useState<{
+    draft: DailyItemDraft;
+    original: DailyItemDraft[];
+    isNew: boolean;
+  } | null>(null);
+  const [error, setError] = useState("");
+  const draft = editing?.draft;
+  let valid: DailyItemDraft | null = null;
+  try {
+    valid = draft ? validatedDailyItems([draft])[0] : null;
+  } catch {
+    valid = null;
+  }
+  const stored = editing?.original.find((i) => i.id === draft?.id);
+  const blank = Boolean(draft && !draft.title.trim() && !draft.amount);
+  const dirty = Boolean(draft && !(editing?.isNew && blank) && !sameDaily(valid ?? draft, stored));
+  const pending = useRef<{ next: DailyItemDraft[] | null }>({ next: null });
+  pending.current = { next: editing && valid && dirty ? upsertDaily(editing.original, valid) : null };
+  useEffect(
+    () => () => {
+      try {
+        if (pending.current.next) onCommit?.(pending.current.next);
+      } catch {
+        /* Incomplete data stays unsaved while leaving. */
+      }
+    },
+    [],
+  );
+  const open = (item?: DailyItemDraft) => {
+    setError("");
+    setEditing({
+      draft: item
+        ? { ...item, days: [...item.days] }
+        : { id: id(), title: "", amount: 0, days: [1, 2, 3, 4, 5], skipHolidays: true },
+      original: items,
+      isNew: !item,
+    });
+  };
+  const update = (changes: Partial<DailyItemDraft>) => {
+    if (!editing) return;
+    const next = { ...editing.draft, ...changes };
+    setEditing({ ...editing, draft: next });
+    // Keep the page's list in step, so saving the whole page includes a complete item.
+    let ok: DailyItemDraft | null = null;
+    try {
+      ok = validatedDailyItems([next])[0];
+    } catch {
+      ok = null;
+    }
+    setItems(ok ? upsertDaily(editing.original, ok) : editing.original);
+  };
+  const close = () => {
+    setEditing(null);
+    setError("");
+  };
+  const save = () => {
+    if (!editing || !draft) return;
+    try {
+      const [item] = validatedDailyItems([draft]);
+      const next = upsertDaily(editing.original, item);
+      setItems(next);
+      onCommit?.(next);
+      close();
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
+  const back = async () => {
+    if (!editing || !dirty) {
+      if (editing) setItems(editing.original);
+      return close();
+    }
+    if (valid) return save();
+    const discard = await confirmDialog({
+      title: "Buang isian ini?",
+      message: "Isian pengeluaran ini belum lengkap, jadi belum bisa disimpan.",
+      confirmText: "Buang",
+      cancelText: "Lanjut isi",
+      danger: true,
+    });
+    if (!discard) return;
+    setItems(editing.original);
+    close();
+  };
+  const remove = async () => {
+    if (!editing || !draft) return;
+    const name = stored?.title || draft.title.trim() || "pengeluaran ini";
+    const ok = await confirmDialog({
+      title: `Hapus ${name}?`,
+      message: "Pengeluaran harian ini tidak dicatat otomatis lagi mulai sekarang.",
+      confirmText: "Hapus",
+      danger: true,
+    });
+    if (!ok) return;
+    const next = editing.original.filter((i) => i.id !== draft.id);
+    setItems(next);
+    try {
+      onCommit?.(next);
+      close();
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
   return (
     <fieldset className="field daily-items-field">
       <legend>Pengeluaran harian</legend>
-      {items.map((item) => (
-        <div className="daily-item-editor" key={item.id}>
-          <div className="form-two">
-            <label className="field">
-              Nama
-              <input
-                maxLength={100}
-                value={item.title}
-                onChange={(e) => update(item.id, { title: e.target.value })}
-                placeholder="Misalnya, ongkos anak"
-              />
-            </label>
-            <label className="field">
-              Nominal per hari (Rp)
-              <MoneyInput
-                value={item.amount}
-                onChange={(amount) => update(item.id, { amount })}
-                placeholder="50.000"
-              />
-            </label>
-          </div>
-          <div className="week-picker" role="group" aria-label={`Hari ${item.title || "pengeluaran"}`}>
-            {[1, 2, 3, 4, 5, 6, 0].map((day) => (
-              <button
-                type="button"
-                key={day}
-                aria-pressed={item.days.includes(day)}
-                className={item.days.includes(day) ? "selected" : ""}
-                onClick={() =>
-                  update(item.id, {
-                    days: item.days.includes(day)
-                      ? item.days.filter((d) => d !== day)
-                      : [...item.days, day],
-                  })
-                }
-              >
-                {weekLabels[day]}
-              </button>
-            ))}
-          </div>
-          <div className="daily-item-editor-foot">
-            <label className="check-row">
+      <MorphSwap swapKey={editing ? `edit:${editing.draft.id}` : "list"} morph="height">
+        {editing && draft ? (
+          <div
+            className="daily-item-editor"
+            onKeyDown={(e) => {
+              // Enter saves this item instead of the whole page form around it.
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") {
+                e.preventDefault();
+                save();
+              }
+            }}
+          >
+            <button type="button" className="text-button back-button" onClick={() => void back()}>
+              <ArrowLeft size={15} /> Daftar pengeluaran harian
+            </button>
+            <div className="form-two">
+              <label className="field">
+                Nama
+                <input
+                  autoFocus={editing.isNew}
+                  maxLength={100}
+                  value={draft.title}
+                  onChange={(e) => update({ title: e.target.value })}
+                  placeholder="Misalnya, ongkos anak"
+                />
+              </label>
+              <label className="field">
+                Nominal per hari (Rp)
+                <MoneyInput
+                  value={draft.amount}
+                  onChange={(amount) => update({ amount })}
+                  placeholder="50.000"
+                />
+              </label>
+            </div>
+            <div className="week-picker" role="group" aria-label={`Hari ${draft.title || "pengeluaran"}`}>
+              {WEEK_ORDER.map((day) => (
+                <button
+                  type="button"
+                  key={day}
+                  aria-pressed={draft.days.includes(day)}
+                  className={draft.days.includes(day) ? "selected" : ""}
+                  onClick={() =>
+                    update({
+                      days: draft.days.includes(day)
+                        ? draft.days.filter((d) => d !== day)
+                        : [...draft.days, day],
+                    })
+                  }
+                >
+                  {weekLabels[day]}
+                </button>
+              ))}
+            </div>
+            <label className="check-row daily-holiday-check">
               <input
                 type="checkbox"
-                checked={item.skipHolidays}
-                onChange={(e) =>
-                  update(item.id, { skipHolidays: e.target.checked })
-                }
+                checked={draft.skipHolidays}
+                onChange={(e) => update({ skipHolidays: e.target.checked })}
               />
               Libur di tanggal merah
             </label>
-            <button
-              type="button"
-              className="text-button danger"
-              onClick={() => setItems(items.filter((i) => i.id !== item.id))}
-            >
-              <Trash2 size={14} /> Hapus
+            <Collapse when={error || null}>
+              {(exiting) => (
+                <p className={`form-error m-appear m-close ${exiting ? "is-exiting" : ""}`} role="alert">
+                  {error}
+                </p>
+              )}
+            </Collapse>
+            <button type="button" className="button dark full" onClick={save}>
+              Simpan <Check size={16} />
             </button>
+            {!editing.isNew && (
+              <button type="button" className="text-button danger shop-delete" onClick={() => void remove()}>
+                <Trash2 size={14} /> Hapus pengeluaran
+              </button>
+            )}
           </div>
-        </div>
-      ))}
-      <button
-        type="button"
-        className="button light"
-        onClick={() =>
-          setItems([
-            ...items,
-            {
-              id: id(),
-              title: "",
-              amount: 0,
-              days: [1, 2, 3, 4, 5],
-              skipHolidays: true,
-            },
-          ])
-        }
-      >
-        <Plus size={16} /> Tambah pengeluaran harian
-      </button>
-      <small>
-        Uang yang keluar rutin tiap hari, misalnya ongkos anak atau uang masak.
-        Tercatat otomatis tiap hari terjadwal. Tandai kalau nggak dipakai.
-      </small>
+        ) : (
+          <div className="daily-items-view">
+            {items.length > 0 && (
+              <AnimatedList items={items} keyOf={(i) => i.id} className="shop-list daily-edit-list">
+                {(item) => (
+                  <button type="button" className="shop-item daily-edit-row" onClick={() => open(item)}>
+                    <span className="shop-thumb">
+                      <CalendarDays size={18} />
+                    </span>
+                    <span className="shop-item-text">
+                      <strong>
+                        <Marquee>{item.title || "Tanpa nama"}</Marquee>
+                      </strong>
+                      <small>
+                        <Marquee>
+                          {dayListText(item.days)}
+                          {item.skipHolidays ? " · libur tanggal merah" : ""}
+                        </Marquee>
+                      </small>
+                    </span>
+                    <span className="daily-edit-amount">
+                      <Money amount={item.amount} className="shop-item-total" />
+                      <small>/hari</small>
+                    </span>
+                  </button>
+                )}
+              </AnimatedList>
+            )}
+            <button type="button" className="button light" onClick={() => open()}>
+              <Plus size={16} /> Tambah pengeluaran harian
+            </button>
+            <small>
+              Uang yang keluar rutin tiap hari, misalnya ongkos anak atau uang masak.
+              Tercatat otomatis tiap hari terjadwal. Tandai kalau nggak dipakai.
+            </small>
+          </div>
+        )}
+      </MorphSwap>
     </fieldset>
   );
 }
@@ -192,11 +348,14 @@ export function ProfileFields({
   setProfile,
   items,
   setItems,
+  commitItems,
 }: {
   profile: Profile;
   setProfile: (p: Profile) => void;
   items?: DailyItemDraft[];
   setItems?: (items: DailyItemDraft[]) => void;
+  /** Settings: save the daily items right away when one item is saved. */
+  commitItems?: (items: DailyItemDraft[]) => void;
 }) {
   const working = profile.working !== false;
   return (
@@ -412,7 +571,7 @@ export function ProfileFields({
           }))}
         />
         <small>
-          Jatah jajan dihitung per periode ini. Pilih tanggal uang bulananmu
+          Jatah jajan dihitung per bulan mulai tanggal ini. Pilih tanggal uang bulananmu
           biasanya masuk (gajian atau transferan).
         </small>
         {working && profile.payrollCycle === "monthly" &&
@@ -424,7 +583,7 @@ export function ProfileFields({
           )}
       </label>
       {items && setItems && (
-        <DailyItemsEditor items={items} setItems={setItems} />
+        <DailyItemsEditor items={items} setItems={setItems} onCommit={commitItems} />
       )}
     </>
   );
@@ -507,7 +666,7 @@ export function Welcome({
               </div>
               <div>
                 <CalendarDays />
-                <span>Jadwal berubah, hitungan menyesuaikan</span>
+                <span>Jadwal berubah, perhitungan menyesuaikan</span>
               </div>
             </div>
             <button className="button dark" onClick={() => setSetup(true)}>
@@ -739,7 +898,7 @@ export function TransactionForm({
             </>
           ) : impact.shortfall > 0 ? (
             <>
-              Uang wajib jadi kurang <Money amount={impact.shortfall} />.
+              Uang untuk tagihan jadi kurang <Money amount={impact.shortfall} />.
             </>
           ) : budget.daysLeft > 1 ? (
             <>
@@ -747,7 +906,7 @@ export function TransactionForm({
               /hari sampai <DateLabel date={budget.end} />.
             </>
           ) : (
-            <>Melebihi jatah hari ini, tapi uang wajib masih aman.</>
+            <>Melebihi jatah hari ini, tapi uang untuk tagihan masih cukup.</>
           )}
         </p>
       )}</Collapse>
@@ -759,7 +918,7 @@ export function TransactionForm({
             onChange={(e) => setNextPeriod(e.target.checked)}
           />
           <span>
-            Untuk periode baru (mulai <DateLabel date={newPeriodStart} />)
+            Untuk bulan berikutnya (mulai <DateLabel date={newPeriodStart} />)
           </span>
         </label>
       )}</Collapse>
@@ -1083,7 +1242,7 @@ export function NeedForm({
           options={[
             {
               value: "essential",
-              label: "Wajib / menunjang kerja",
+              label: "Penting / menunjang kerja",
               sublabel: "Diprioritaskan sebelum kebutuhan lain",
             },
             {

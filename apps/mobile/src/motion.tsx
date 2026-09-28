@@ -16,7 +16,7 @@
  * together with the content's opacity/scale.
  */
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { AccessibilityInfo, Animated, Easing, GestureResponderEvent, LayoutChangeEvent, Modal, Platform, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { AccessibilityInfo, Animated, Easing, GestureResponderEvent, LayoutChangeEvent, Modal, Platform, Pressable, StyleProp, StyleSheet, Text, TextStyle, View, ViewStyle } from 'react-native';
 import { BlurTargetView, BlurView } from 'expo-blur';
 import type { BlurTint } from 'expo-blur';
 import { colors as c, styles as s } from './theme';
@@ -188,7 +188,7 @@ type SwapMode = 'block' | 'left' | 'right';
  * while the new content comes in 80 ms later (opacity, scale 0.94 → 1, 6 px slide, spring).
  * `variant="value"` is pattern 7: old value leaves 4 px upward, new value rises 4 px from below, no scale.
  */
-export function CrossBlur({k, children, style, mode = 'block', variant = 'morph', parentVeil = false, onSwap}: {k: string | number; children: React.ReactNode; style?: StyleProp<ViewStyle>; mode?: SwapMode; variant?: 'morph' | 'value'; parentVeil?: boolean; onSwap?: () => void}) {
+export function CrossBlur({k, children, style, mode = 'block', variant = 'morph', parentVeil = false, onSwap, animateHeight = false}: {k: string | number; children: React.ReactNode; style?: StyleProp<ViewStyle>; mode?: SwapMode; variant?: 'morph' | 'value'; parentVeil?: boolean; onSwap?: () => void; animateHeight?: boolean}) {
   const reducedNow = useReducedMotion();
   const veil = useParentVeil();
   const enter = useRef(new Animated.Value(1)).current;
@@ -205,8 +205,32 @@ export function CrossBlur({k, children, style, mode = 'block', variant = 'morph'
     setLeavingK(prevK);
   }
   const first = useRef(true);
+  // `animateHeight`: the box keeps the old content's height and springs to the new one, so whatever
+  // sits below (or the sheet around it) moves smoothly instead of jumping when views of different sizes swap.
+  const boxH = useRef(new Animated.Value(0)).current; // JS-driven (layout)
+  const lastH = useRef(0);
+  const sizing = useRef(false);
+  const [sized, setSized] = useState(false);
+  const sizeWatch = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const endSizing = () => {
+    if (sizeWatch.current) {clearTimeout(sizeWatch.current); sizeWatch.current = null;}
+    sizing.current = false; boxH.stopAnimation(); setSized(false);
+  };
+  useEffect(() => () => {if (sizeWatch.current) clearTimeout(sizeWatch.current);}, []);
+  const onActiveLayout = (e: LayoutChangeEvent) => {
+    const h = e.nativeEvent.layout.height;
+    lastH.current = h;
+    if (!sizing.current) return;
+    Animated.spring(boxH, {toValue: h, ...SPRING, useNativeDriver: false, restDisplacementThreshold: 0.5, restSpeedThreshold: 0.5}).start(({finished}) => {if (finished) endSizing();});
+  };
   useLayoutEffect(() => {
     if (first.current) {first.current = false; return;}
+    if (animateHeight && !reduced && lastH.current > 0) {
+      boxH.stopAnimation(); boxH.setValue(lastH.current);
+      sizing.current = true; setSized(true);
+      if (sizeWatch.current) clearTimeout(sizeWatch.current);
+      sizeWatch.current = setTimeout(endSizing, 1200);
+    }
     onSwap?.();
     if (parentVeil) veil?.pulse();
     enter.stopAnimation(); leave.stopAnimation();
@@ -227,14 +251,14 @@ export function CrossBlur({k, children, style, mode = 'block', variant = 'morph'
   const place: ViewStyle = mode === 'block' ? {position: 'absolute', top: 0, left: 0, right: 0} : mode === 'left' ? {position: 'absolute', top: 0, left: 0, width: 640, alignItems: 'flex-start'} : {position: 'absolute', top: 0, right: 0, width: 640, alignItems: 'flex-end'};
   const order = leavingK !== null && leavingK !== k ? [leavingK, k] : [k];
   for (const key of [...nodes.current.keys()]) if (!order.includes(key)) nodes.current.delete(key);
-  return <View style={style}>
-    {order.map(key => {
-      const leaving = key !== k;
-      return <Animated.View key={String(key)} pointerEvents={leaving ? 'none' : 'auto'} accessibilityElementsHidden={leaving} importantForAccessibility={leaving ? 'no-hide-descendants' : 'auto'} style={leaving ? [place, outStyle] : inStyle}>
-        <FrozenContext.Provider value={leaving}>{nodes.current.get(key)}</FrozenContext.Provider>
-      </Animated.View>;
-    })}
-  </View>;
+  const layers = order.map(key => {
+    const leaving = key !== k;
+    return <Animated.View key={String(key)} onLayout={!leaving && animateHeight ? onActiveLayout : undefined} pointerEvents={leaving ? 'none' : 'auto'} accessibilityElementsHidden={leaving} importantForAccessibility={leaving ? 'no-hide-descendants' : 'auto'} style={leaving ? [place, outStyle] : inStyle}>
+      <FrozenContext.Provider value={leaving}>{nodes.current.get(key)}</FrozenContext.Provider>
+    </Animated.View>;
+  });
+  if (!animateHeight) return <View style={style}>{layers}</View>;
+  return <Animated.View style={[style, sized && {height: boxH, overflow: 'hidden'}]}>{layers}</Animated.View>;
 }
 
 /** Pattern 7 for numbers/text. Pass `bg` (surface colour) to add the real blur. */
@@ -243,6 +267,41 @@ export function RollingValue({value, style, bg, align = 'left', containerStyle}:
   const text = <CrossBlur k={value} mode={align} variant="value" onSwap={bg ? veil.pulse : undefined}><Text style={style}>{value}</Text></CrossBlur>;
   if (!bg || !BLUR_SUPPORTED) return <View style={containerStyle}>{text}</View>;
   return <Veiled veil={veil} bg={bg} radius={4} style={containerStyle}>{text}</Veiled>;
+}
+
+// ─── Synchronized marquee (no "…" anywhere) ────────────────────────────────
+/** One cycle: pause → glide to the end → pause → glide back. Every label runs on the same clock. */
+export const MARQUEE = {pause: 1200, move: 2400};
+/** ONE shared clock (0 = start, 1 = end) for every overflowing label, so they start and arrive together. */
+const marqueeClock = new Animated.Value(0);
+let marqueeStarted = false;
+function startMarqueeClock() {
+  if (marqueeStarted) return;
+  marqueeStarted = true;
+  const leg = (toValue: number) => Animated.timing(marqueeClock, {toValue, delay: MARQUEE.pause, duration: MARQUEE.move, easing: Easing.inOut(Easing.ease), useNativeDriver: true});
+  Animated.loop(Animated.sequence([leg(1), leg(0)])).start();
+}
+/**
+ * Single-line label that never truncates: when the text is wider than its box it scrolls sideways
+ * by exactly its overflow, driven by the shared clock. Text that fits stays still. With reduced motion
+ * the label wraps onto more lines instead of moving.
+ * `containerStyle` sizes the clipping box (e.g. `{flex: 1}` in a row, `{flexShrink: 1}` inside a button).
+ */
+export function Marquee({children, style, containerStyle}: {children: React.ReactNode; style?: StyleProp<TextStyle>; containerStyle?: StyleProp<ViewStyle>}) {
+  const reducedNow = useReducedMotion();
+  const [box, setBox] = useState(0);
+  const [natural, setNatural] = useState(0);
+  const overflow = !reducedNow && box > 0 && natural > box + 0.5 ? Math.ceil(natural - box) : 0;
+  useEffect(() => {if (overflow > 0) startMarqueeClock();}, [overflow > 0]);
+  const translateX = useMemo(() => marqueeClock.interpolate({inputRange: [0, 1], outputRange: [0, -overflow]}), [overflow]);
+  if (reducedNow) return <View style={[{maxWidth: '100%'}, containerStyle]}><Text style={style}>{children}</Text></View>;
+  return <View style={[{overflow: 'hidden', maxWidth: '100%'}, containerStyle]} onLayout={e => {const w = e.nativeEvent.layout.width; setBox(prev => Math.abs(prev - w) > 0.5 ? w : prev);}}>
+    {/* Invisible unwrapped copy: its width is the text's natural single-line width. */}
+    <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{position: 'absolute', left: 0, top: 0, width: 9999, flexDirection: 'row', alignItems: 'flex-start', opacity: 0}}>
+      <Text style={style} onLayout={e => {const w = e.nativeEvent.layout.width; setNatural(prev => Math.abs(prev - w) > 0.5 ? w : prev);}}>{children}</Text>
+    </View>
+    <Animated.Text numberOfLines={1} ellipsizeMode="clip" style={[style, overflow > 0 && {width: natural, transform: [{translateX}]}]}>{children}</Animated.Text>
+  </View>;
 }
 
 // ─── Pattern 9: appear / disappear ─────────────────────────────────────────
@@ -474,9 +533,9 @@ export function SegmentPills<K extends string | number>({options, value, onChang
     {options.map((o, i) => {
       const active = o.key === value;
       const pill = <PressScale accessibilityLabel={o.label} accessibilityState={{selected: active}} onPress={() => {onChange(o.key);}} style={[s.tab, {backgroundColor: 'transparent'}]}>
-        <Text style={[s.actionLabel, active && {color: c.ink, fontWeight: 'bold'}]}>{o.label}</Text>
+        <Marquee style={[s.actionLabel, active && {color: c.ink, fontWeight: 'bold'}]}>{o.label}</Marquee>
       </PressScale>;
-      return <View key={String(o.key)} onLayout={setBox(o.key)}>{stagger ? <StaggerItem order={i} from="top">{pill}</StaggerItem> : pill}</View>;
+      return <View key={String(o.key)} style={{maxWidth: '100%'}} onLayout={setBox(o.key)}>{stagger ? <StaggerItem order={i} from="top">{pill}</StaggerItem> : pill}</View>;
     })}
   </View>;
 }

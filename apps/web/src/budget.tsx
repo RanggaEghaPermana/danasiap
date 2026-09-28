@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
+  ArrowLeft,
   ArrowUpRight,
   Camera,
+  ShoppingBag,
   Check,
   ChevronDown,
   Plus,
@@ -42,10 +44,22 @@ import {
   Empty,
   Money,
   MoneyInput,
+  NoMatch,
   PanelHeading,
+  SearchField,
+  matchesQuery,
 } from "./components";
+import { confirmDialog } from "./dialog";
 import { GasPurchaseForm, TokenPurchaseForm, gasSizeText } from "./forms";
-import { Collapse, MorphSwap, exitThen, flyTo, useAppear } from "./motion";
+import {
+  AnimatedList,
+  Collapse,
+  Marquee,
+  MorphSwap,
+  SPRING_MS,
+  flyTo,
+  reducedMotion,
+} from "./motion";
 
 /** Where money set aside ends up: the Uang Sisa card (or, off the dashboard, its note). */
 const POT_TARGETS = ["pot", "pot-note"];
@@ -103,36 +117,47 @@ export function BudgetCard({
           </p>
         </div>
         {budget.shortfall === 0 ? (
-          <span className="status-pill safe">Wajib aman</span>
+          <span className="status-pill safe">
+            <Marquee>✓ Uang untuk tagihan &amp; kebutuhan cukup</Marquee>
+          </span>
         ) : budget.coveredByLeftover ? (
           <span className="status-pill warning">
-            Wajib aman kalau pakai <Money amount={budget.shortfall} /> dari Uang
-            Sisa
+            <Marquee>
+              Cukup, asal pakai <Money amount={budget.shortfall} /> dari Uang
+              Sisa
+            </Marquee>
           </span>
         ) : (
           <span className="status-pill shortfall">
-            Wajib kurang <Money amount={budget.shortfall} />
-            {budget.shortfallDate && (
-              <>
-                {" "}
-                mulai <DateLabel date={budget.shortfallDate} />
-              </>
-            )}
+            <Marquee>
+              Uang kurang <Money amount={budget.shortfall} /> untuk tagihan
+              &amp; kebutuhan
+              {budget.shortfallDate && (
+                <>
+                  {" "}
+                  (mulai <DateLabel date={budget.shortfallDate} />)
+                </>
+              )}
+            </Marquee>
           </span>
         )}
       </div>
-      <span className="muted">Boleh jajan hari ini</span>
+      <span className="muted">Bisa dipakai jajan hari ini</span>
       <Money amount={allowed} className="daily-amount" />
       <p className="budget-sub">
-        dari <Money amount={budget.perDay} /> · terpakai{" "}
+        Jatah <Money amount={budget.perDay} /> · sudah dipakai{" "}
         <Money amount={budget.spentToday} />
-        {budget.leftToday < 0 && (
-          <strong className="over">
-            {" "}
-            · lebih <Money amount={-budget.leftToday} />
-          </strong>
-        )}
       </p>
+      <Collapse when={budget.leftToday < 0}>
+        {(exiting) => (
+          <p className={`budget-sub over-line m-appear m-close ${exiting ? "is-exiting" : ""}`}>
+            <strong className="over">
+              Kelebihan <Money amount={Math.max(0, -budget.leftToday)} /> dari
+              jatah hari ini
+            </strong>
+          </p>
+        )}
+      </Collapse>
       <BudgetNote budget={budget} />
       <div className="budget-actions">
         <button className="button lime" onClick={checkPrice}>
@@ -143,7 +168,7 @@ export function BudgetCard({
           aria-expanded={details}
           onClick={() => setDetails(!details)}
         >
-          {details ? "Tutup hitungan" : "Lihat hitungan"}
+          <Marquee>{details ? "Tutup rincian" : "Lihat rinciannya"}</Marquee>
           <ChevronDown size={15} className={details ? "rotate-180" : ""} />
         </button>
       </div>
@@ -153,37 +178,44 @@ export function BudgetCard({
           className={`budget-breakdown m-menu m-stagger ${exiting ? "is-exiting" : ""}`}
         >
           <div className="daily-row">
-            <span>Uang sekarang</span>
+            <span>Uang yang ada sekarang</span>
             <Money amount={budget.money} />
           </div>
           {budget.expectedIncome > 0 && (
             <div className="daily-row">
-              <span>+ Pemasukan yang masih akan masuk</span>
+              <span>+ Uang yang akan masuk (gaji/upah)</span>
               <Money amount={budget.expectedIncome} />
             </div>
           )}
           <div className="daily-row">
-            <span>− Kebutuhan wajib</span>
+            <span>
+              − Tagihan &amp; kebutuhan sampai <DateLabel date={budget.end} />
+            </span>
             <Money amount={budget.obligations} />
           </div>
           <div className="daily-row">
-            <span>− Pengeluaran harian sisa periode</span>
+            <span>
+              − Ongkos &amp; uang harian sampai <DateLabel date={budget.end} />
+            </span>
             <Money amount={budget.dailyRemaining} />
           </div>
           {budget.reservedAfterPeriod > 0 && (
             <div className="daily-row">
-              <span>− Disiapkan sampai uang berikutnya masuk</span>
+              <span>− Disimpan untuk kebutuhan sebelum uang berikutnya masuk</span>
               <Money amount={budget.reservedAfterPeriod} />
             </div>
           )}
           {budget.leftoverPot > 0 && (
             <div className="daily-row">
-              <span>− Uang sisa (disimpan terpisah)</span>
+              <span>− Uang Sisa (disimpan terpisah)</span>
               <Money amount={budget.leftoverPot} />
             </div>
           )}
           <div className="daily-row total">
-            <span>= Uang bebas sampai akhir periode</span>
+            <span>
+              {budget.freeMoney < 0 ? "= Kurang sampai " : "= Sisa untuk jajan sampai "}
+              <DateLabel date={budget.end} />
+            </span>
             <Money amount={budget.freeMoney} />
           </div>
           {budget.spentToday > 0 && (
@@ -195,8 +227,8 @@ export function BudgetCard({
           <div className="daily-row">
             <span>
               {budget.cashLimitedUntil || (budget.perDay === 0 && budget.freeMoney > 0)
-                ? "Jatah per hari (dari uang yang sudah ada)"
-                : `÷ ${budget.daysLeft} hari (termasuk hari ini)`}
+                ? "Jatah jajan per hari (dari uang yang sudah ada)"
+                : `Jatah jajan per hari (dibagi ${budget.daysLeft} hari)`}
             </span>
             <strong>
               <Money amount={budget.perDay} />
@@ -204,31 +236,31 @@ export function BudgetCard({
             </strong>
           </div>
           <div className="daily-row">
-            <span>Aman dipakai sekarang</span>
+            <span>Bisa dipakai sekarang tanpa ganggu tagihan</span>
             <Money amount={budget.safeNow} />
           </div>
           {budget.nextPeriodIncome && (
             <p className="form-hint">
               Gaji ± <Money amount={budget.nextPeriodIncome.amount} /> tanggal{" "}
               <DateLabel date={budget.nextPeriodIncome.date} /> masuk di akhir
-              periode, jadi dihitung untuk periode berikutnya.
+              bulan ini, jadi dihitung untuk bulan berikutnya.
             </p>
           )}
           <div className="dashed-rule" />
           {budget.carryOver > 0 && (
             <div className="daily-row">
-              <span>Sisa periode lalu</span>
+              <span>Sisa dari bulan lalu</span>
               <Money amount={budget.carryOver} />
             </div>
           )}
           <div className="daily-row">
-            <span>Uang masuk periode ini</span>
+            <span>Uang masuk bulan ini</span>
             <Money amount={budget.periodIncome} />
           </div>
           {budget.heldForNextPeriod > 0 && (
             <p className="form-hint">
-              <Money amount={budget.heldForNextPeriod} /> disimpan untuk periode
-              baru.
+              <Money amount={budget.heldForNextPeriod} /> disimpan untuk bulan
+              berikutnya.
             </p>
           )}
         </div>
@@ -349,28 +381,32 @@ export function DailyItemsDay({
           <div className="daily-item-row" key={item.id}>
             <div className="daily-item-main">
               <div className="daily-item-info">
-                <strong>{item.title}</strong>
+                <strong>
+                  <Marquee>{item.title}</Marquee>
+                </strong>
                 <MorphSwap
                   as="span"
                   swapKey={unused ? "unused" : left > 0 ? `left${left}` : "plain"}
                   className={unused ? "positive" : left ? "partial" : ""}
                 >
-                  {unused ? (
-                    <>
-                      Nggak dipakai · +<Money amount={left} /> ke uang sisa
-                    </>
-                  ) : left > 0 ? (
-                    <>
-                      Terpakai <Money amount={item.amount - left} /> · sisa{" "}
-                      <Money amount={left} />
-                    </>
-                  ) : date > today ? (
-                    "Terjadwal"
-                  ) : recorded > 0 ? (
-                    "Tercatat otomatis"
-                  ) : (
-                    "Terjadwal"
-                  )}
+                  <Marquee>
+                    {unused ? (
+                      <>
+                        Tidak dipakai · <Money amount={left} /> masuk Uang Sisa
+                      </>
+                    ) : left > 0 ? (
+                      <>
+                        Terpakai <Money amount={item.amount - left} /> ·{" "}
+                        <Money amount={left} /> masuk Uang Sisa
+                      </>
+                    ) : date > today ? (
+                      "Terjadwal"
+                    ) : recorded > 0 ? (
+                      "Tercatat otomatis"
+                    ) : (
+                      "Terjadwal"
+                    )}
+                  </Marquee>
                 </MorphSwap>
               </div>
               <Money amount={item.amount} />
@@ -391,7 +427,7 @@ export function DailyItemsDay({
                     )
                   }
                 >
-                  Nggak dipakai
+                  <Marquee>Nggak dipakai</Marquee>
                 </button>
               )}
               <button
@@ -402,7 +438,7 @@ export function DailyItemsDay({
                   setError("");
                 }}
               >
-                Ada sisa…
+                <Marquee>Ada sisa</Marquee>
               </button>
               {left > 0 && (
                 <button
@@ -416,7 +452,7 @@ export function DailyItemsDay({
                     })
                   }
                 >
-                  <Undo2 size={13} /> Batalkan
+                  <Undo2 size={13} /> <Marquee>Batalkan</Marquee>
                 </button>
               )}
             </div>
@@ -509,7 +545,7 @@ export function PotPanel({
       <div className="panel-heading">
         <div>
           <h2>Uang Sisa</h2>
-          <p>Uang rencana yang nggak kepakai periode ini</p>
+          <p>Uang yang nggak jadi dipakai, misal ongkos saat anak libur</p>
         </div>
         <span className="pot-icon">
           <PiggyBank size={20} />
@@ -549,10 +585,10 @@ export function PotDetail({
         <span>Uang Sisa sekarang</span>
         <Money amount={pot} />
         <small>
-          Periode <PeriodLabel {...budget} />
+          Bulan ini: <PeriodLabel {...budget} />
         </small>
       </div>
-      <h3 className="dialog-subheading">Masuk periode ini</h3>
+      <h3 className="dialog-subheading">Masuk bulan ini</h3>
       {budget.leftovers.length ? (
         <div className="pot-list">
           {budget.leftovers.map((leftover) => (
@@ -580,7 +616,7 @@ export function PotDetail({
       </div>
       {history.length > 0 && (
         <>
-          <h3 className="dialog-subheading">Periode sebelumnya</h3>
+          <h3 className="dialog-subheading">Bulan-bulan sebelumnya</h3>
           <div className="pot-list">
             {history.map((period) => (
               <div className="pot-history-row" key={period.start}>
@@ -592,7 +628,7 @@ export function PotDetail({
                   <Money amount={period.leftover} />
                 </div>
                 <small>
-                  Uang saat periode ditutup <Money amount={period.endingMoney} />
+                  Uang saat bulan itu ditutup <Money amount={period.endingMoney} />
                 </small>
               </div>
             ))}
@@ -655,7 +691,7 @@ export function PurchaseCheck({ state }: { state: AppState }) {
                 </>
               ) : (
                 <>
-                  Jangan dulu, uang wajib jadi kurang{" "}
+                  Jangan dulu, uang untuk tagihan jadi kurang{" "}
                   <Money amount={result.shortfall} />.
                 </>
               )}
@@ -664,7 +700,8 @@ export function PurchaseCheck({ state }: { state: AppState }) {
         </div>
       ) : (
         <p className="form-hint">
-          Ketik harganya, nanti kelihatan aman atau nggak buat uang wajibmu.
+          Ketik harganya, nanti kelihatan aman atau nggak buat tagihan &amp;
+          kebutuhanmu.
         </p>
       )}
       </MorphSwap>
@@ -868,12 +905,6 @@ type ShoppingDraft = Omit<ShoppingItem, "qty"> & { qty: string };
 
 const qtyText = (qty: number) => String(qty).replace(".", ",");
 
-function draftShopping(state: AppState): ShoppingDraft[] {
-  return (state.shopping?.items ?? []).map((item) => ({
-    ...item,
-    qty: qtyText(item.qty),
-  }));
-}
 
 /** Square-crops and compresses a product photo so the whole list stays small enough to sync. */
 function shrinkImage(file: File): Promise<string> {
@@ -955,6 +986,45 @@ function ItemPhoto({
   );
 }
 
+const blankDraft = (): ShoppingDraft => ({
+  id: crypto.randomUUID(),
+  name: "",
+  qty: "1",
+  price: 0,
+});
+
+const toDraft = (item: ShoppingItem): ShoppingDraft => ({ ...item, qty: qtyText(item.qty) });
+
+/** Checks one edited item; throws a friendly message when something is missing. */
+function cleanShoppingItem(draft: ShoppingDraft): ShoppingItem {
+  const name = draft.name.trim();
+  if (!name) throw new Error("Isi nama barangnya dulu.");
+  const qty = parseDecimal(draft.qty);
+  if (!Number.isFinite(qty) || qty <= 0 || qty > 100_000)
+    throw new Error(`Jumlah ${name} harus lebih dari 0.`);
+  return {
+    id: draft.id,
+    name,
+    qty,
+    price: draft.price,
+    ...(draft.skip ? { skip: true } : {}),
+    ...(draft.image ? { image: draft.image } : {}),
+  };
+}
+
+const sameItem = (a?: ShoppingItem, b?: ShoppingItem) =>
+  JSON.stringify(a && [a.name, a.qty, a.price, Boolean(a.skip), a.image ?? ""]) ===
+  JSON.stringify(b && [b.name, b.qty, b.price, Boolean(b.skip), b.image ?? ""]);
+
+const upsertItem = (items: ShoppingItem[], item: ShoppingItem) =>
+  items.some((i) => i.id === item.id)
+    ? items.map((i) => (i.id === item.id ? item : i))
+    : [...items, item];
+
+/**
+ * Belanja bulanan. The list is for looking and ticking "Skip"; tapping a row opens a form for
+ * just that item (morph), and "Simpan" there saves the whole list right away.
+ */
 export function ShoppingSection({
   state,
   dispatch,
@@ -964,97 +1034,151 @@ export function ShoppingSection({
   dispatch: Dispatch;
   startRun?: boolean;
 }) {
-  const [run, setRun] = useState(
-    startRun && (state.shopping?.items ?? []).some((i) => !i.skip),
-  );
-  const [items, setItems] = useState<ShoppingDraft[]>(() =>
-    draftShopping(state),
-  );
-  const [dueDay, setDueDay] = useState(
-    state.shopping?.dueDay ?? state.profile.periodStartDay ?? 1,
-  );
+  const saved = state.shopping;
+  const items = saved?.items ?? [];
+  const dueDay = saved?.dueDay ?? state.profile.periodStartDay ?? 1;
+  const total = shoppingTotal(saved);
+  const [run, setRun] = useState(startRun && items.some((i) => !i.skip));
+  const [editing, setEditing] = useState<{ draft: ShoppingDraft; isNew: boolean } | null>(null);
+  const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  // Saving or finishing replaces the stored list; start editing from it again.
-  const [source, setSource] = useState(state.shopping);
-  if (source !== state.shopping) {
-    setSource(state.shopping);
-    setItems(draftShopping(state));
-    setDueDay(state.shopping?.dueDay ?? dueDay);
+  const lastEdited = useRef<string | null>(null);
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const commit = (next: ShoppingItem[], day = dueDay) =>
+    dispatch({ type: "shopping/set", items: next, dueDay: day });
+  const stored = editing ? items.find((i) => i.id === editing.draft.id) : undefined;
+  const draft = editing?.draft;
+  const blank = Boolean(draft && !draft.name.trim() && !draft.price && !draft.image);
+  let valid: ShoppingItem | null = null;
+  try {
+    valid = draft ? cleanShoppingItem(draft) : null;
+  } catch {
+    valid = null;
   }
-  const parsed = items.map((item) => ({
-    ...item,
-    qty: parseDecimal(item.qty),
-  }));
-  const total = shoppingTotal({ items: parsed.map((i) => ({ ...i, qty: Number.isFinite(i.qty) ? i.qty : 0 })), dueDay });
-  const saved = state.shopping;
-  const update = (itemId: string, changes: Partial<ShoppingDraft>) =>
-    setItems(items.map((i) => (i.id === itemId ? { ...i, ...changes } : i)));
+  const dirty = Boolean(draft && !(editing?.isNew && blank) && !sameItem(valid ?? undefined, stored) );
+
+  // Leaving the page with a complete, changed item saves it, so typed work is never lost.
+  const pending = useRef<{ item: ShoppingItem | null; items: ShoppingItem[]; dueDay: number }>({ item: null, items, dueDay });
+  pending.current = { item: dirty ? valid : null, items, dueDay };
+  useEffect(
+    () => () => {
+      const { item, items: list, dueDay: day } = pending.current;
+      if (!item) return;
+      try {
+        dispatch({ type: "shopping/set", items: upsertItem(list, item), dueDay: day });
+      } catch {
+        /* Stays unsaved; nothing else to do while leaving. */
+      }
+    },
+    [],
+  );
+
+  const scrollToTop = () => {
+    const top = sectionRef.current?.getBoundingClientRect().top ?? 0;
+    if (top < 0)
+      sectionRef.current?.scrollIntoView({
+        behavior: reducedMotion() ? "auto" : "smooth",
+        block: "start",
+      });
+  };
+  const openItem = (item?: ShoppingItem) => {
+    setError("");
+    setMessage("");
+    setEditing(item ? { draft: toDraft(item), isNew: false } : { draft: blankDraft(), isNew: true });
+    scrollToTop();
+  };
+  const closeEditor = (text = "") => {
+    lastEdited.current = editing?.draft.id ?? null;
+    setEditing(null);
+    setError("");
+    setMessage(text);
+  };
+  // Back in the list, bring the row that was just edited into view.
+  useEffect(() => {
+    if (editing || !lastEdited.current) return;
+    const id = lastEdited.current;
+    lastEdited.current = null;
+    const timer = setTimeout(() => {
+      sectionRef.current
+        ?.querySelector(`[data-key="${CSS.escape(id)}"]`)
+        ?.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "nearest" });
+    }, SPRING_MS);
+    return () => clearTimeout(timer);
+  }, [editing]);
+
+  const update = (changes: Partial<ShoppingDraft>) =>
+    setEditing((current) => current && { ...current, draft: { ...current.draft, ...changes } });
   const save = (e: FormEvent) => {
     e.preventDefault();
+    if (!draft) return;
     try {
-      const clean: ShoppingItem[] = parsed.map((item) => {
-        const name = item.name.trim();
-        if (!name) throw new Error("Isi nama semua barang belanja.");
-        if (!Number.isFinite(item.qty) || item.qty <= 0 || item.qty > 100_000)
-          throw new Error(`Jumlah ${name} harus lebih dari 0.`);
-        return {
-          id: item.id,
-          name,
-          qty: item.qty,
-          price: item.price,
-          ...(item.skip ? { skip: true } : {}),
-          ...(item.image ? { image: item.image } : {}),
-        };
-      });
-      dispatch({ type: "shopping/set", items: clean, dueDay });
+      const item = cleanShoppingItem(draft);
+      commit(upsertItem(items, item));
+      closeEditor(`${item.name} tersimpan.`);
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
+  const back = async () => {
+    if (!draft || !dirty) return closeEditor();
+    if (valid) {
+      try {
+        commit(upsertItem(items, valid));
+        return closeEditor(`${valid.name} tersimpan.`);
+      } catch (err) {
+        return setError(errorText(err));
+      }
+    }
+    const discard = await confirmDialog({
+      title: "Buang isian ini?",
+      message: "Isian barang ini belum lengkap, jadi belum bisa disimpan.",
+      confirmText: "Buang",
+      cancelText: "Lanjut isi",
+      danger: true,
+    });
+    if (discard) closeEditor();
+  };
+  const remove = async () => {
+    if (!draft) return;
+    const name = stored?.name || draft.name.trim() || "barang ini";
+    const ok = await confirmDialog({
+      title: `Hapus ${name}?`,
+      message: "Barang ini dihapus dari daftar belanja bulanan.",
+      confirmText: "Hapus barang",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      commit(items.filter((i) => i.id !== draft.id));
+      lastEdited.current = null;
+      setEditing(null);
       setError("");
-      setMessage("Daftar belanja tersimpan. Totalnya jadi kebutuhan wajib.");
+      setMessage(`${name} dihapus dari daftar.`);
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
+  const toggleSkip = (item: ShoppingItem) => {
+    try {
+      commit(items.map((i) => (i.id === item.id ? { ...i, skip: !i.skip } : i)));
+      setMessage("");
     } catch (err) {
       setMessage("");
       setError(errorText(err));
     }
   };
-  const dirty =
-    JSON.stringify(parsed.map(({ id, name, qty, price, skip, image }) => [id, name.trim(), qty, price, Boolean(skip), image ?? ""])) !==
-      JSON.stringify((saved?.items ?? []).map(({ id, name, qty, price, skip, image }) => [id, name, qty, price, Boolean(skip), image ?? ""])) ||
-    dueDay !== (saved?.dueDay ?? dueDay);
-  // Leaving the tab with unsaved but complete rows saves them, so a typed list is never lost.
-  const pending = useRef<{ dirty: boolean; items: ShoppingItem[] | null; dueDay: number }>({ dirty: false, items: null, dueDay });
-  // Completely empty rows (no name, no price) are ignored rather than blocking the save.
-  const filled = parsed.filter((item) => item.name.trim() || item.price > 0);
-  const complete = filled.every((item) => item.name.trim() && Number.isFinite(item.qty) && item.qty > 0 && item.qty <= 100_000);
-  pending.current = {
-    dirty,
-    dueDay,
-    items: complete
-      ? filled.map((item) => ({
-          id: item.id,
-          name: item.name.trim(),
-          qty: item.qty,
-          price: item.price,
-          ...(item.skip ? { skip: true } : {}),
-          ...(item.image ? { image: item.image } : {}),
-        }))
-      : null,
-  };
-  useEffect(
-    () => () => {
-      const { dirty: unsaved, items, dueDay: day } = pending.current;
-      if (unsaved && items) {
-        try {
-          dispatch({ type: "shopping/set", items, dueDay: day });
-        } catch {
-          /* Incomplete data stays unsaved; the editor shows why when opened again. */
-        }
-      }
-    },
-    [],
-  );
-  const appear = useAppear(items.map((i) => i.id));
+
+  const searching = items.length >= 5;
+  const shown = searching ? items.filter((i) => matchesQuery(query, i.name)) : items;
   const running = Boolean(run && saved);
+  const draftQty = draft ? parseDecimal(draft.qty) : 0;
   return (
-    <MorphSwap swapKey={running ? "run" : "list"} morph="height">
+    <div ref={sectionRef} className="shopping-scroll-anchor">
+    <MorphSwap
+      swapKey={running ? "run" : editing ? `edit:${editing.draft.id}` : "list"}
+      morph="height"
+    >
     {running ? (
       <ShoppingRun
         state={state}
@@ -1064,13 +1188,85 @@ export function ShoppingSection({
           setMessage(text ?? "");
         }}
       />
+    ) : editing && draft ? (
+      <section className="panel shopping-panel">
+        <button type="button" className="text-button back-button" onClick={() => void back()}>
+          <ArrowLeft size={15} /> Daftar belanja
+        </button>
+        <div className="panel-heading">
+          <div>
+            <h2>{editing.isNew ? "Tambah barang" : "Ubah barang"}</h2>
+            <p>Harga dan jumlah untuk sebulan.</p>
+          </div>
+        </div>
+        <form className="shop-edit" onSubmit={save}>
+          <div className="shop-edit-name">
+            <ItemPhoto
+              image={draft.image}
+              name={draft.name}
+              onChange={(image) => update({ image })}
+            />
+            <label className="field">
+              Nama barang
+              <input
+                autoFocus={editing.isNew}
+                maxLength={100}
+                value={draft.name}
+                onChange={(e) => update({ name: e.target.value })}
+                placeholder="Misalnya, beras 5 kg"
+              />
+            </label>
+          </div>
+          <div className="form-two">
+            <label className="field">
+              Jumlah
+              <input
+                inputMode="decimal"
+                value={draft.qty}
+                onChange={(e) => update({ qty: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              Harga satuan (Rp)
+              <MoneyInput value={draft.price} onChange={(price) => update({ price })} />
+            </label>
+          </div>
+          <label className="check-row pot-toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(draft.skip)}
+              onChange={(e) => update({ skip: e.target.checked })}
+            />
+            <span>Stok masih ada, skip bulan ini</span>
+          </label>
+          <div className="daily-row total">
+            <span>Total barang ini</span>
+            <Money amount={Number.isFinite(draftQty) ? Math.round(draftQty * draft.price) : 0} />
+          </div>
+          <Collapse when={error || null}>
+            {(exiting) => (
+              <p className={`form-error m-appear m-close ${exiting ? "is-exiting" : ""}`} role="alert">
+                {error}
+              </p>
+            )}
+          </Collapse>
+          <button className="button dark full" type="submit">
+            Simpan <Check size={16} />
+          </button>
+          {!editing.isNew && (
+            <button type="button" className="text-button danger shop-delete" onClick={() => void remove()}>
+              <Trash2 size={14} /> Hapus barang
+            </button>
+          )}
+        </form>
+      </section>
     ) : (
     <section className="panel shopping-panel">
       <div className="panel-heading">
         <div>
           <h2>Belanja bulanan</h2>
           <p>
-            {saved && shoppingTotal(saved) > 0 ? (
+            {saved && total > 0 ? (
               <>
                 Jadwal belanja berikutnya{" "}
                 <DateLabel date={shoppingDueDate(state)} />
@@ -1090,147 +1286,128 @@ export function ShoppingSection({
           <ShoppingBasket size={20} />
         </span>
       </div>
-      {message && (
-        <p
-          className="form-success m-appear"
-          data-fly-target={message.includes("Uang Sisa") ? "pot-note" : undefined}
-        >
-          {message}
-        </p>
-      )}
-      <form onSubmit={save}>
-        {items.length ? (
-          <div className="shopping-list">
-            {items.map((item, index) => {
-              const qty = parsed[index].qty;
-              return (
-                <div
-                  className={`shopping-row ${item.skip ? "skipped" : ""} ${appear(item.id)}`}
-                  key={item.id}
-                >
-                  <label className="field compact shopping-name">
-                    Nama barang
-                    <input
-                      maxLength={100}
-                      value={item.name}
-                      onChange={(e) => update(item.id, { name: e.target.value })}
-                      placeholder="Misalnya, beras 5 kg"
-                    />
-                  </label>
-                  <label className="field compact">
-                    Jumlah
-                    <input
-                      inputMode="decimal"
-                      value={item.qty}
-                      onChange={(e) => update(item.id, { qty: e.target.value })}
-                    />
-                  </label>
-                  <label className="field compact">
-                    Harga satuan (Rp)
-                    <MoneyInput
-                      value={item.price}
-                      onChange={(price) => update(item.id, { price })}
-                    />
-                  </label>
-                  <div className="shopping-row-foot">
-                    <ItemPhoto
-                      image={item.image}
-                      name={item.name}
-                      onChange={(image) => update(item.id, { image })}
-                    />
-                    <Money
-                      amount={Number.isFinite(qty) ? Math.round(qty * item.price) : 0}
-                    />
-                    <label className="check-row">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(item.skip)}
-                        onChange={(e) =>
-                          update(item.id, { skip: e.target.checked })
-                        }
-                      />
-                      Masih ada, skip bulan ini
-                    </label>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label={`Hapus ${item.name || "barang"}`}
-                      onClick={(e) =>
-                        exitThen(e.currentTarget.closest(".shopping-row"), () =>
-                          setItems((all) => all.filter((i) => i.id !== item.id)),
-                        )
-                      }
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="form-hint">
-            Belum ada barang. Tambahkan beras, minyak, sabun, dan lainnya.
+      <Collapse when={message || null}>
+        {(exiting) => (
+          <p
+            className={`form-success m-appear m-close ${exiting ? "is-exiting" : ""}`}
+            data-fly-target={message.includes("Uang Sisa") ? "pot-note" : undefined}
+          >
+            {message}
           </p>
         )}
+      </Collapse>
+      <div className="shop-summary">
+        <div className="daily-row total">
+          <span>Total bulan ini</span>
+          <Money amount={total} />
+        </div>
+        <div className="shop-due-row">
+          <span>
+            <CalendarDays size={15} /> Tanggal belanja
+          </span>
+          <CustomSelect
+            ariaLabel="Tanggal belanja"
+            value={dueDay}
+            onChange={(value) => {
+              try {
+                commit(items, Number(value));
+              } catch (err) {
+                setError(errorText(err));
+              }
+            }}
+            options={Array.from({ length: 28 }, (_, i) => i + 1).map((d) => ({
+              value: d,
+              label: `Tiap tanggal ${d}`,
+            }))}
+          />
+        </div>
         <button
           type="button"
-          className="button light"
-          onClick={() =>
-            setItems([
-              ...items,
-              { id: crypto.randomUUID(), name: "", qty: "1", price: 0 },
-            ])
-          }
+          className="button lime full"
+          disabled={!saved || total === 0}
+          onClick={() => {
+            setMessage("");
+            setRun(true);
+          }}
         >
-          <Plus size={16} /> Tambah barang
+          <ShoppingBasket size={16} /> Mulai belanja
         </button>
-        <div className="shopping-summary">
-          <div className="daily-row total">
-            <span>Total bulan ini</span>
-            <Money amount={total} />
-          </div>
-          <label className="field">
-            Tanggal belanja
-            <CustomSelect
-              value={dueDay}
-              onChange={(value) => setDueDay(Number(value))}
-              options={Array.from({ length: 28 }, (_, i) => i + 1).map((d) => ({
-                value: d,
-                label: `Tanggal ${d}`,
-              }))}
+      </div>
+      <Collapse when={searching} initial={false}>
+        {(exiting) => (
+          <div className={`m-close ${exiting ? "is-exiting" : ""}`}>
+            <SearchField
+              className="list-search"
+              value={query}
+              onChange={setQuery}
+              placeholder="Cari barang…"
             />
-          </label>
-        </div>
-        {error && (
-          <p className="form-error" role="alert">
+          </div>
+        )}
+      </Collapse>
+      {items.length ? (
+        <AnimatedList items={shown} keyOf={(i) => i.id} className="shop-list">
+          {(item) => (
+            <div className={`shop-item ${item.skip ? "skipped" : ""}`}>
+              <button
+                type="button"
+                className="shop-item-main"
+                onClick={() => openItem(item)}
+                aria-label={`Ubah ${item.name}`}
+              >
+                <span className="shop-thumb">
+                  {item.image ? <img src={item.image} alt="" /> : <ShoppingBag size={18} />}
+                </span>
+                <span className="shop-item-text">
+                  <strong>
+                    <Marquee>{item.name}</Marquee>
+                  </strong>
+                  <small>
+                    <Marquee>
+                      {qtyText(item.qty)} × {currency(item.price)}
+                    </Marquee>
+                  </small>
+                </span>
+                <Money amount={Math.round(item.qty * item.price)} className="shop-item-total" />
+              </button>
+              <button
+                type="button"
+                className={`chip-button skip-chip ${item.skip ? "selected" : ""}`}
+                aria-pressed={Boolean(item.skip)}
+                title="Stok masih ada, skip bulan ini"
+                onClick={() => toggleSkip(item)}
+              >
+                <Check size={13} className="skip-check" /> Skip
+              </button>
+            </div>
+          )}
+        </AnimatedList>
+      ) : (
+        <p className="form-hint">
+          Belum ada barang. Tambahkan beras, minyak, sabun, dan lainnya.
+        </p>
+      )}
+      <Collapse when={searching && query.trim() && !shown.length ? "nomatch" : null}>
+        {(exiting) => (
+          <div className={`m-appear m-close ${exiting ? "is-exiting" : ""}`}>
+            <NoMatch query={query} />
+          </div>
+        )}
+      </Collapse>
+      <Collapse when={!editing && error ? error : null}>
+        {(exiting) => (
+          <p className={`form-error m-appear m-close ${exiting ? "is-exiting" : ""}`} role="alert">
             {error}
           </p>
         )}
-        <div className="budget-actions">
-          <button className="button dark" type="submit" disabled={!dirty}>
-            Simpan daftar <Check size={16} />
-          </button>
-          <button
-            type="button"
-            className="button lime"
-            disabled={dirty || !saved || shoppingTotal(saved) === 0}
-            title={dirty ? "Simpan daftar dulu sebelum mulai belanja" : undefined}
-            onClick={() => {
-              setMessage("");
-              setRun(true);
-            }}
-          >
-            <ShoppingBasket size={16} /> Mulai belanja
-          </button>
-        </div>
-        {dirty && saved && (
-          <p className="form-hint">Simpan daftar dulu sebelum mulai belanja.</p>
-        )}
-      </form>
+      </Collapse>
+      <button type="button" className="button light shop-add" onClick={() => openItem()}>
+        <Plus size={16} /> Tambah barang
+      </button>
     </section>
     )}
     </MorphSwap>
+    </div>
   );
 }
 
@@ -1328,7 +1505,9 @@ function ShoppingRun({
                 {row.image && (
                   <img className="item-thumb" src={row.image} alt="" />
                 )}
-                <strong>{row.name}</strong>
+                <strong>
+                  <Marquee>{row.name}</Marquee>
+                </strong>
               </label>
               <label className="field compact">
                 Jumlah

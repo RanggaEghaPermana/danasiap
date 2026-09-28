@@ -58,9 +58,14 @@ import {
   CardChip,
   MoneyInput,
   CustomSelect,
+  NoMatch,
+  SearchField,
+  matchesQuery,
 } from "./components";
 import {
+  AnimatedList,
   Collapse,
+  Marquee,
   MorphSwap,
   TabIndicator,
   useAppear,
@@ -364,7 +369,7 @@ export function Dashboard({
             </div>
           ) : null}
           <div className="daily-row">
-            <span>Periode hitungan</span>
+            <span>Dihitung dari</span>
             <small className="muted">
               {payroll.monthStart} s/d {payroll.monthEnd}
             </small>
@@ -499,11 +504,18 @@ export function Plans({
 }: PageProps) {
   const working = state.profile.working !== false;
   const [filter, setFilter] = useState("all");
-  const visible = state.needs
-    .filter((n) => !n.paid && (filter === "all" || n.kind === filter))
+  const [query, setQuery] = useState("");
+  const unpaid = state.needs.filter((n) => !n.paid);
+  const searchable = unpaid.length >= 5;
+  const visible = unpaid
+    .filter(
+      (n) =>
+        (filter === "all" || n.kind === filter) &&
+        (!searchable || matchesQuery(query, n.title)),
+    )
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const noMatch = searchable && query.trim() !== "" && !visible.length;
   const tab = plansTab === "shop-run" ? "shopping" : plansTab;
-  const appear = useAppear(visible.map((n) => n.id));
   return (
     <>
       <div className="section-title">
@@ -566,7 +578,7 @@ export function Plans({
           </div>
         ) : (
           <div>
-            <span>Aman dipakai sekarang</span>
+            <span>Bisa dipakai sekarang</span>
             <Money amount={periodBudget(state).safeNow} />
           </div>
         )}
@@ -588,17 +600,28 @@ export function Plans({
           </button>
         ))}
       </div>
-      {visible.length ? (
-        <div className="plans-grid">
-          {visible.map((need) => (
-            <NeedCard
-              key={need.id}
-              className={appear(need.id)}
-              need={need}
-              onOpen={() => open({ type: "need", need })}
+      <Collapse when={searchable} initial={false}>
+        {(exiting) => (
+          <div className={`m-close ${exiting ? "is-exiting" : ""}`}>
+            <SearchField
+              className="list-search"
+              value={query}
+              onChange={setQuery}
+              placeholder="Cari kebutuhan…"
             />
-          ))}
-        </div>
+          </div>
+        )}
+      </Collapse>
+      <AnimatedList items={visible} keyOf={(n) => n.id} className="plans-grid">
+        {(need) => (
+          <NeedCard need={need} onOpen={() => open({ type: "need", need })} />
+        )}
+      </AnimatedList>
+      <Collapse when={visible.length ? null : noMatch ? "nomatch" : "empty"} initial={false}>
+        {(exiting) => (
+          <div className={`m-appear m-close ${exiting ? "is-exiting" : ""}`}>
+      {noMatch ? (
+        <NoMatch query={query} />
       ) : (
         <Empty
           icon={<Wallet />}
@@ -615,6 +638,9 @@ export function Plans({
           Atur nominal dan jadwalnya. DanaSiap akan menghitung persiapannya.
         </Empty>
       )}
+          </div>
+        )}
+      </Collapse>
       <section className="panel advice-panel">
         <CircleHelp size={21} />
         <div>
@@ -779,6 +805,7 @@ export function Calendar({ state, open }: PageProps) {
               >
                 <strong>{i + 1}</strong>
                 <span>
+                  <Marquee>
                   {!working
                     ? holiday ?? ""
                     : record?.status === "absent"
@@ -792,10 +819,13 @@ export function Calendar({ state, open }: PageProps) {
                           : !work
                             ? "Libur"
                             : "Kerja"}
+                  </Marquee>
                 </span>
                 {working && record?.planned && <small>Rencana</small>}
                 {needs.slice(0, 2).map((n) => (
-                  <small key={n.id}>{n.title}</small>
+                  <small key={n.id}>
+                    <Marquee>{n.title}</Marquee>
+                  </small>
                 ))}
                 {leftover && <i className="leftover-dot" aria-hidden="true" />}
               </button>
@@ -1025,7 +1055,7 @@ export function History({ state, open }: PageProps) {
     .filter(
       (t) =>
         (filter === "all" || t.type === filter) &&
-        `${t.title} ${t.category}`.toLowerCase().includes(query.toLowerCase()),
+        matchesQuery(query, t.title, t.category),
     )
     .sort((a, b) => b.date.localeCompare(a.date));
   const exportCsv = () => {
@@ -1065,15 +1095,11 @@ export function History({ state, open }: PageProps) {
       </div>
       <section className="panel">
         <div className="history-toolbar">
-          <label className="search-field">
-            <Search size={18} />
-            <input
-              type="search"
-              placeholder="Cari transaksi atau kategori"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </label>
+          <SearchField
+            value={query}
+            onChange={setQuery}
+            placeholder="Cari transaksi…"
+          />
           <CustomSelect
             ariaLabel="Filter jenis transaksi"
             value={filter}
@@ -1085,23 +1111,34 @@ export function History({ state, open }: PageProps) {
             ]}
           />
         </div>
-        <div className="transaction-list history-list">
-          {entries.length ? (
-            entries.map((t) => (
-              <TransactionRow
-                key={t.id}
-                transaction={t}
-                onClick={() =>
-                  open({ type: "transaction-detail", transaction: t })
-                }
-              />
-            ))
-          ) : (
-            <Empty icon={<Search />} title="Belum ada transaksi yang cocok">
-              Coba pencarian lain atau catat transaksi pertamamu.
-            </Empty>
+        <AnimatedList
+          items={entries}
+          keyOf={(t) => t.id}
+          className="transaction-list history-list"
+        >
+          {(t) => (
+            <TransactionRow
+              transaction={t}
+              onClick={() => open({ type: "transaction-detail", transaction: t })}
+            />
           )}
-        </div>
+        </AnimatedList>
+        <Collapse
+          when={entries.length ? null : query.trim() ? "nomatch" : "empty"}
+          initial={false}
+        >
+          {(exiting) => (
+            <div className={`m-appear m-close ${exiting ? "is-exiting" : ""}`}>
+              {query.trim() ? (
+                <NoMatch query={query} />
+              ) : (
+                <Empty icon={<ReceiptText />} title="Belum ada transaksi">
+                  Catat pengeluaran pertama supaya uangmu mulai terbaca.
+                </Empty>
+              )}
+            </div>
+          )}
+        </Collapse>
       </section>
     </>
   );
